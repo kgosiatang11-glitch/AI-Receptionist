@@ -1,0 +1,130 @@
+from flask import Flask, request
+from dotenv import load_dotenv
+load_dotenv()
+
+from twilio.twiml.messaging_response import MessagingResponse
+from openai import OpenAI
+import os
+from datetime import datetime, time
+import os.path
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+app = Flask(__name__)
+BOT_ACTIVE = True
+
+OWNER = "whatsapp:+26771298601"
+
+
+@app.route("/whatsapp", methods=["POST"])
+def whatsapp():
+    global BOT_ACTIVE
+
+    incoming = request.values.get("Body", "")
+    sender = request.values.get("From", "")
+    text = incoming.lower()
+
+   # Owner controls
+    if sender == OWNER and text == "/off":
+        BOT_ACTIVE = False
+        return "Bot turned OFF"
+
+    if sender == OWNER and text == "/on":
+        BOT_ACTIVE = True
+        return "Bot turned ON"
+
+    if not BOT_ACTIVE:
+        return ""
+  
+   # Create users file if missing
+    if not os.path.exists("users.txt"):
+        open("users.txt", "w").close()
+
+    with open("users.txt", "r") as f:
+        users = f.read().splitlines()
+  
+   # First time welcome
+    if sender not in users:
+        with open("users.txt", "a") as f:
+            f.write(sender + "\n")
+
+        resp = MessagingResponse()
+        resp.message("Hi 👋 Thank you for contacting 10by20@FNB World of Golf! You can ask about prices, location, or type *book* to reserve a court.")
+        return str(resp)
+
+    # Greeting
+    if text in ["hi", "hello", "hey"]:
+        resp = MessagingResponse()
+        resp.message("Hi 👋 How can I help you today?")
+        return str(resp)
+
+    # Booking shortcut
+    if "book" in text:
+        resp = MessagingResponse()
+        resp.message("To make a booking, please visit: https://book.xsports.co.bw\n\nLet us know if you need anything else 🙂")
+        return str(resp)
+
+    # Prices
+    if "price" in text or "rates" in text or "cost" in text:
+        resp = MessagingResponse()
+        resp.message(
+            "🎾 Court Rates:\n\n"
+            "Weekdays:\n"
+            "07:00–09:00 P260/hr\n"
+            "09:00–16:00 P120/hr\n"
+            "16:00–18:00 P260/hr\n"
+            "18:00–21:00 P340/hr\n\n"
+            "Weekends:\n"
+            "07:00–18:00 P260/hr\n"
+            "18:00–21:00 P340/hr\n\n"
+            "🎾 Racket Rental:\nP50 per person"
+        )
+        return str(resp)
+
+    # Location
+    if "location" in text or "where" in text:
+        resp = MessagingResponse()
+        resp.message("📍 We are located at FNB World of Golf@ Bluetree, Maruapula.")
+        return str(resp)
+
+    # Walk-ins
+    if "walk" in text:
+        resp = MessagingResponse()
+        resp.message("Yes, walk-ins are welcome (subject to court availability).")
+        return str(resp)
+
+    # Payment
+    if "payment" in text or "pay" in text:
+        resp = MessagingResponse()
+        resp.message("We accept EFT and card swipe.")
+        return str(resp)
+
+    # Log user
+    with open("logs.txt", "a", encoding="utf-8") as f:
+        f.write(f"{datetime.now()} | USER: {incoming}\n")
+
+    # OpenAI fallback
+    completion = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a friendly professional AI receptionist for 10by20@FNB World of Golf in Botswana. Business hours are 07:00–21:00 daily. Walk-ins allowed. Payment via EFT or card. Always answer clearly and briefly."
+            },
+            {"role": "user", "content": incoming}
+        ]
+    )
+
+    reply = completion.choices[0].message.content
+
+    resp = MessagingResponse()
+    resp.message(reply)
+
+    with open("logs.txt", "a", encoding="utf-8") as f:
+        f.write(f"{datetime.now()} | BOT: {reply}\n\n")
+
+    return str(resp)
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=3000)
