@@ -16,7 +16,7 @@ BOT_ACTIVE = True
 OWNER = "whatsapp:+26771298601"
 
 
-@app.route("/whatsapp", methods=["POST"])
+@app.route("/whatsapp", methods=["GET","POST"])
 def whatsapp():
     global BOT_ACTIVE
 
