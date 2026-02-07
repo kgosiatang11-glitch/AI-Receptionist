@@ -18,6 +18,7 @@ OWNER = "whatsapp:+26771298601"
 
 @app.route("/whatsapp", methods=["GET","POST"])
 def whatsapp():
+     print("🔥 WHATSAPP HIT RECEIVED")
     global BOT_ACTIVE
 
     incoming = request.values.get("Body", "")
