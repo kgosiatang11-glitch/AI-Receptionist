@@ -18,7 +18,7 @@ OWNER = "whatsapp:+26771298601"
 
 @app.route("/whatsapp", methods=["GET", "POST"])
 def whatsapp():
-    print("🔥 WHATSAPP HIT RECEIVED")  # FIX 1: proper indentation
+    print("🔥 WHATSAPP HIT RECEIVED")
     global BOT_ACTIVE
 
     incoming = request.values.get("Body", "")
@@ -28,11 +28,15 @@ def whatsapp():
     # Owner controls
     if sender == OWNER and text == "/off":
         BOT_ACTIVE = False
-        return "Bot turned OFF"
+        resp = MessagingResponse()
+        resp.message("Bot turned OFF")
+        return str(resp)
 
     if sender == OWNER and text == "/on":
         BOT_ACTIVE = True
-        return "Bot turned ON"
+        resp = MessagingResponse()
+        resp.message("Bot turned ON")
+        return str(resp)
 
     if not BOT_ACTIVE:
         resp = MessagingResponse()
@@ -108,27 +112,5 @@ def whatsapp():
         return str(resp)
 
     # Log user
-    with open("logs.txt", "a", encoding="utf-8") as f:
-        f.write(f"{datetime.now()} | USER: {incoming}\n")
-
-    # FIX 2: correct OpenAI API call
-    response = client.responses.create(
-        model="gpt-4o-mini",
-        input=incoming
-    )
-
-    reply = response.output_text
-
-    resp = MessagingResponse()
-    resp.message(reply)
-
-    with open("logs.txt", "a", encoding="utf-8") as f:
-        f.write(f"{datetime.now()} | BOT: {reply}\n\n")
-
-    return str(resp)
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=3000)
-
+    with open("logs.txt", "a", encoding
 
