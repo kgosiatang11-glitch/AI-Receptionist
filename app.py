@@ -35,7 +35,8 @@ def whatsapp():
         return "Bot turned ON"
 
     if not BOT_ACTIVE:
-        return ""
+        resp = MessagingResponse()
+        return str(resp)
 
     # Create users file if missing
     if not os.path.exists("users.txt"):
