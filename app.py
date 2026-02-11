@@ -111,6 +111,30 @@ def whatsapp():
         resp.message("We accept EFT and card swipe.")
         return str(resp)
 
-    # Log user
-    with open("logs.txt", "a", encoding
+    # Log user message
+    with open("logs.txt", "a", encoding="utf-8") as f:
+        f.write(f"{datetime.now()} | USER: {incoming}\n")
+
+    # OpenAI fallback
+    response = client.responses.create(
+        model="gpt-4o-mini",
+        input=incoming
+    )
+
+    reply = response.output_text
+
+    resp = MessagingResponse()
+    resp.message(reply)
+
+    # Log bot reply
+    with open("logs.txt", "a", encoding="utf-8") as f:
+        f.write(f"{datetime.now()} | BOT: {reply}\n\n")
+
+    return str(resp)
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 3000))
+    app.run(host="0.0.0.0", port=port)
+
 
