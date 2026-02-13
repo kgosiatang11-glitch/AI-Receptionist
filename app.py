@@ -122,10 +122,12 @@ def whatsapp():
         return str(resp)
 
     # Human escalation
-    if any(word in text for word in ["manager", "human", "call", "person"]):
+    if any(word in text for word in
+    ["manager", "human", "call", "person"]):
         try:
             twilio_client.messages.create(
-                body=f"Escalation Request:\nFrom: {sender}\nMessage: {incoming}",
+                body=f"Escalation Request:
+    \nFrom: {sender}\nMessage: {incoming}",
                 from_="whatsapp:+14155238886",
                 to=OWNER
             )
