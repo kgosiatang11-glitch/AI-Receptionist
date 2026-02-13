@@ -15,6 +15,14 @@ BOT_ACTIVE = True
 
 OWNER = "whatsapp:+26771298601"
 
+from twilio.rest import Client as 
+TwilioClient
+
+twilio_client = TwilioClient(
+    os.getenv("TWILIO_ACCOUNT_SID"),
+    os.getenv("TWILIO_AUTH_TOKEN")
+)
+
 @app.route("/")
 def health():
     return "AI Receptionist is running"
@@ -114,6 +122,21 @@ def whatsapp():
         resp.message("We accept EFT and card swipe.")
         return str(resp)
 
+    # Human escalation
+    if any(word in text for word in ["manager", "human", "call", "person"]):
+    try:
+        twilio_client.messages.create(
+            body=f"Escalation Request:\nFrom: {sender}\nMessage: {incoming}",
+            from_="whatsapp:+14155238886",  # Twilio sandbox number
+            to=OWNER
+        )
+    except Exception as e:
+        print("Escalation failed:", e)
+
+    resp = MessagingResponse()
+    resp.message("Thank you. A team member will contact you shortly.")
+    return str(resp)
+    
     # Log user message
     with open("logs.txt", "a", encoding="utf-8") as f:
         f.write(f"{datetime.now()} | USER: {incoming}\n")
