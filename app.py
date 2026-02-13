@@ -15,6 +15,9 @@ BOT_ACTIVE = True
 
 OWNER = "whatsapp:+26771298601"
 
+@app.route("/")
+def health():
+    return "AI Receptionist is running"
 
 @app.route("/whatsapp", methods=["GET", "POST"])
 def whatsapp():
@@ -134,7 +137,7 @@ def whatsapp():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 3000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
 
