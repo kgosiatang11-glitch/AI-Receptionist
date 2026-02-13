@@ -123,19 +123,19 @@ def whatsapp():
 
     # Human escalation
     if any(word in text for word in ["manager", "human", "call", "person"]):
-    try:
-        twilio_client.messages.create(
-            body=f"Escalation Request:\nFrom: {sender}\nMessage: {incoming}",
-            from_="whatsapp:+14155238886",  # Twilio sandbox number
-            to=OWNER
-        )
-    except Exception as e:
-        print("Escalation failed:", e)
+        try:
+            twilio_client.messages.create(
+                body=f"Escalation Request:\nFrom: {sender}\nMessage: {incoming}",
+                from_="whatsapp:+14155238886",
+                to=OWNER
+            )
+        except Exception as e:
+            print("Escalation failed:", e)
 
-    resp = MessagingResponse()
-    resp.message("Thank you. A team member will contact you shortly.")
-    return str(resp)
-    
+        resp = MessagingResponse()
+        resp.message("Thank you. A team member will contact you shortly.")
+        return str(resp)
+
     # Log user message
     with open("logs.txt", "a", encoding="utf-8") as f:
         f.write(f"{datetime.now()} | USER: {incoming}\n")
@@ -161,5 +161,6 @@ def whatsapp():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
