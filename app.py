@@ -15,8 +15,7 @@ BOT_ACTIVE = True
 
 OWNER = "whatsapp:+26771298601"
 
-from twilio.rest import Client as 
-TwilioClient
+from twilio.rest import Client as TwilioClient
 
 twilio_client = TwilioClient(
     os.getenv("TWILIO_ACCOUNT_SID"),
