@@ -173,11 +173,7 @@ def whatsapp():
 )
 
 reply = response.output_text
-resp.message(reply)
-return str(resp)    reply = response.output_text
-
-    resp = MessagingResponse()
-    resp.message(reply)
+resp.message(reply)  
 
     # Log bot reply
     with open("logs.txt", "a", encoding="utf-8") as f:
