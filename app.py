@@ -126,8 +126,7 @@ def whatsapp():
     ["manager", "human", "call", "person"]):
         try:
             twilio_client.messages.create(
-                body=f"Escalation Request:
-    \nFrom: {sender}\nMessage: {incoming}",
+                body=f"Escalation Request:\nFrom: {sender}\nMessage: {incoming}",
                 from_="whatsapp:+14155238886",
                 to=OWNER
             )
