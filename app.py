@@ -66,8 +66,7 @@ def whatsapp():
 
         resp = MessagingResponse()
         resp.message(
-            "Hi 👋 Thank you for contacting 10by20@FNB World of Golf! "
-            "You can ask about prices, location, or type *book* to reserve a court."
+            "Hi 👋 Thank you for contacting 10by20@FNB World of Golf! How can I help you 😊 "
         )
         return str(resp)
 
@@ -81,7 +80,7 @@ def whatsapp():
     if "book" in text:
         resp = MessagingResponse()
         resp.message(
-            "To make a booking, please visit: https://book.xsports.co.bw\n\n"
+            "To make a booking, please visit: https://bluetree.playbypoint.com\n\n"
             "Let us know if you need anything else 🙂"
         )
         return str(resp)
@@ -100,6 +99,7 @@ def whatsapp():
             "07:00–18:00 P260/hr\n"
             "18:00–21:00 P340/hr\n\n"
             "🎾 Racket Rental:\nP50 per person"
+            "To secure your slot, book here:\nhttps://bluetree.playbypoint.com"
         )
         return str(resp)
 
@@ -143,11 +143,38 @@ def whatsapp():
 
     # OpenAI fallback
     response = client.responses.create(
-        model="gpt-4o-mini",
-        input=incoming
-    )
+    model="gpt-4o-mini",
+    input=[
+        {
+            "role": "system",
+            "content": """
+    You are the official WhatsApp assistant for 10by20 Padel Club.
+   
+    10by20 is a padel tennis facility.
 
-    reply = response.output_text
+    Your job:
+    - Help customers book courts
+    - Provide pricing information
+    - Share opening hours 
+    - Answer basic facility questions
+
+    Rules:
+    - Keep responses under 2 sentences.
+    - Be friendly and professional.
+    - Encourage bookings when relevant.
+    - Do not mention that you are an AI.
+    """
+        },
+        {
+            "role": "user",
+            "content": incoming
+        }
+    ]
+)
+
+reply = response.output_text
+resp.message(reply)
+return str(resp)    reply = response.output_text
 
     resp = MessagingResponse()
     resp.message(reply)
