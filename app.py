@@ -138,9 +138,10 @@ def whatsapp():
         return str(resp)
 
     # Log user message
-        with open("logs.txt", "a", 
+    with open("logs.txt", "a", 
     encoding="utf-8") as f:
-            f.write(f"{datetime.now()} | USER: {incoming}\n")
+        f.write(f"{datetime.now()} | USER: 
+    {incoming}\n")
     
     # OpenAI fallback
     response = client.responses.create(
@@ -151,7 +152,7 @@ def whatsapp():
             "content": """
     You are the official WhatsApp assistant for 10by20 Padel Club.
 
-    10by20 is a padel club.
+    10by20 is a padel club .
 
     Your job:
     - Help customers book courts
