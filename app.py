@@ -138,9 +138,10 @@ def whatsapp():
         return str(resp)
 
     # Log user message
-    with open("logs.txt", "a", encoding="utf-8") as f:
-        f.write(f"{datetime.now()} | USER: {incoming}\n")
-
+        with open("logs.txt", "a", 
+    encoding="utf-8") as f:
+            f.write(f"{datetime.now()} | USER: {incoming}\n")
+    
     # OpenAI fallback
     response = client.responses.create(
     model="gpt-4o-mini",
@@ -149,13 +150,13 @@ def whatsapp():
             "role": "system",
             "content": """
     You are the official WhatsApp assistant for 10by20 Padel Club.
-   
-    10by20 is a padel tennis facility.
+
+    10by20 is a padel club.
 
     Your job:
     - Help customers book courts
     - Provide pricing information
-    - Share opening hours 
+    - Share opening hours
     - Answer basic facility questions
 
     Rules:
@@ -164,23 +165,24 @@ def whatsapp():
     - Encourage bookings when relevant.
     - Do not mention that you are an AI.
     """
-        },
-        {
-            "role": "user",
-            "content": incoming
-        }
-    ]
-)
+             },
+             {
+                 "role": "user",
+                 "content": incoming
+            }
+         ]
+    )
 
-reply = response.output_text
-resp.message(reply)  
+    reply = response.output_text
+
+    resp = MessagingResponse()
+    resp.message(reply)
 
     # Log bot reply
     with open("logs.txt", "a", encoding="utf-8") as f:
-        f.write(f"{datetime.now()} | BOT: {reply}\n\n")
+    f.write(f"{datetime.now()} | BOT: {reply}\n\n")
 
     return str(resp)
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
