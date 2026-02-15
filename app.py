@@ -86,7 +86,7 @@ def whatsapp():
         return str(resp)
 
     # Prices
-    if "price" in text or "rates" in text or "cost" in text:
+    if any(word in text for word in ["price", "rates", "cost", "how much", "fee", "court price"]):
         resp = MessagingResponse()
         resp.message(
             "🎾 Court Rates:\n\n"
