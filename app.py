@@ -122,12 +122,11 @@ def whatsapp():
         return str(resp)
 
     # Opening hours
-    if "hours" in text or "open" in text or 
-    "closing" in text:
-      resp = MessagingResponse()
-      resp.message(
-        "We are open daily from 0700 to 2100.\n\n"
-        "You can book your session here:\nhttps://bluetree.playbypoint.com"
+    if "hours" in text or "open" in text or "closing" in text:
+        resp = MessagingResponse()
+        resp.message(
+           "We are open daily from 0700 to 2100.\n\n"
+           "You can book your session here:\nhttps://bluetree.playbypoint.com"
     )
     return str(resp)
 
@@ -188,7 +187,7 @@ def whatsapp():
     
     if not reply or reply.strip() == "":
     reply = "Please contact us for assistance with bookings, pricing, or club information."
-
+    
     resp = MessagingResponse()
     resp.message(reply)
 
