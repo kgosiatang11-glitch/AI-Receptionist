@@ -99,7 +99,7 @@ def whatsapp():
             "07:00–18:00 P260/hr\n"
             "18:00–21:00 P340/hr\n\n"
             "🎾 Racket Rental:\nP50 per person"
-            "To secure your slot, book here:\nhttps://bluetree.playbypoint.com"
+            "To secure your preferred time, book here:\nhttps://bluetree.playbypoint.com"
         )
         return str(resp)
 
@@ -121,6 +121,15 @@ def whatsapp():
         resp.message("We accept EFT and card swipe.")
         return str(resp)
 
+    # Opening hours
+    if "hours" in text or "open" in text or "closing" in text:
+    resp = MessagingResponse()
+    resp.message(
+        "We are open daily from 0700 to 2100.\n\n"
+        "You can book your session here:\nhttps://bluetree.playbypoint.com"
+    )
+    return str(resp)
+
     # Human escalation
     if any(word in text for word in
     ["manager", "human", "call", "person"]):
@@ -140,7 +149,6 @@ def whatsapp():
     # Log user message
     with open("logs.txt", "a", encoding="utf-8") as f:
         f.write(f"{datetime.now()} | USER: {incoming}\n")
-
     
     # OpenAI fallback
     response = client.responses.create(
@@ -176,6 +184,9 @@ def whatsapp():
     )
 
     reply = response.output_text
+    
+    if not reply or reply.strip() == "":
+    reply = "Please contact us for assistance with bookings, pricing, or club information."
 
     resp = MessagingResponse()
     resp.message(reply)
