@@ -139,7 +139,8 @@ def whatsapp():
 
     # Log user message
     with open("logs.txt", "a", encoding="utf-8") as f:
-    f.write(f"{datetime.now()} | USER: {incoming}\n")
+        f.write(f"{datetime.now()} | USER: {incoming}\n")
+
     
     # OpenAI fallback
     response = client.responses.create(
@@ -179,7 +180,8 @@ def whatsapp():
 
     # Log bot reply
     with open("logs.txt", "a", encoding="utf-8") as f:
-    f.write(f"{datetime.now()} | BOT: {reply}\n\n")
+        f.write(f"{datetime.now()} | BOT: {reply}\n\n")
+
 
     return str(resp)
 
