@@ -35,6 +35,24 @@ def whatsapp():
     incoming = request.values.get("Body", "")
     sender = request.values.get("From", "")
     text = incoming.lower()
+ 
+    # BASIC Plan Conversation Limit (500)
+   
+    if not os.path.exists("usage.txt"):
+        with open("usage.txt", "w") as f:
+            f.write("0")
+
+    with open("usage.txt", "r") as f:
+        count = int(f.read().strip())
+
+    if count >= 500:
+        resp = MessagingResponse()
+        resp.message("You have reached your monthly conversation limit. Please upgrade your plan.")
+        return str(resp)
+
+    count += 1
+    with open("usage.txt", "w") as f:
+        f.write(str(count))
 
     # Owner controls
     if sender == OWNER and text == "/off":
