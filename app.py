@@ -28,6 +28,7 @@ def health():
 
 @app.route("/whatsapp", methods=["GET", "POST"])
 def whatsapp():
+    resp = MessagingResponse()
     print("🔥 WHATSAPP HIT RECEIVED")
     global BOT_ACTIVE
 
