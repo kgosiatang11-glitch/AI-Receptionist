@@ -45,7 +45,7 @@ def whatsapp():
     with open("usage.txt", "r") as f:
         count = int(f.read().strip())
 
-    if count >= 500:
+    if count >= 2:
         resp = MessagingResponse()
         resp.message("You have reached your monthly conversation limit. Please upgrade your plan.")
         return str(resp)
