@@ -185,9 +185,6 @@ def whatsapp():
 
     reply = response.output_text
     
-    if not reply or reply.strip() == "":
-    reply = "Please contact us for assistance with bookings, pricing, or club information."
-    
     resp = MessagingResponse()
     resp.message(reply)
 
