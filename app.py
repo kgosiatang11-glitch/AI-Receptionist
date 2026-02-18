@@ -30,6 +30,7 @@ def health():
 def whatsapp():
     resp = MessagingResponse()
     print("🔥 WHATSAPP HIT RECEIVED")
+    print("🚀 VERSION: USAGE COUNTER V2")
     global BOT_ACTIVE
 
     incoming = request.values.get("Body", "")
@@ -50,7 +51,7 @@ def whatsapp():
 
     print("🔥 CURRENT COUNT:", count)
 
-    if count >= 2:
+    if count >= 500:
         print("⛔ LIMIT REACHED")
         resp = MessagingResponse()
         resp.message("You have reached your monthly conversation limit. Please upgrade your plan.")
