@@ -37,20 +37,29 @@ def whatsapp():
     text = incoming.lower()
  
     # BASIC Plan Conversation Limit (500)
-   
+
     if not os.path.exists("usage.txt"):
         with open("usage.txt", "w") as f:
             f.write("0")
 
     with open("usage.txt", "r") as f:
-        count = int(f.read().strip())
+        raw = f.read().strip()
+        if raw == "":
+            raw = "0"
+        count = int(raw)
+
+    print("🔥 CURRENT COUNT:", count)
 
     if count >= 2:
+        print("⛔ LIMIT REACHED")
         resp = MessagingResponse()
         resp.message("You have reached your monthly conversation limit. Please upgrade your plan.")
         return str(resp)
 
     count += 1
+
+    print("✅ NEW COUNT:", count)
+
     with open("usage.txt", "w") as f:
         f.write(str(count))
 
