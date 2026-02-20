@@ -51,7 +51,7 @@ def whatsapp():
     # Read current usage
     with open("usage.txt", "r") as f:
         raw = f.read().strip()
-         if raw == "":
+        if raw == "":
              raw = "0"
         count = int(raw)
 
