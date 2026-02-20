@@ -87,9 +87,16 @@ def whatsapp():
     # Only increase count if it's a new 24hr conversation
     if new_conversation:
         if count >= 500:
-            resp = MessagingResponse()
-            resp.message("You have reached your monthly conversation limit. Please upgrade your plan.")
-            return str(resp)
+    try:
+        twilio_client.messages.create(
+            body="⚠️ BASIC plan limit reached (500 conversations). Please upgrade client.",
+            from_="whatsapp:+14155238886",
+            to=OWNER
+        )
+    except Exception as e:
+        print("Owner notification failed:", e)
+
+    print("⚠️ LIMIT REACHED - OWNER NOTIFIED")
 
     count += 1
     with open("usage.txt", "w") as f:
