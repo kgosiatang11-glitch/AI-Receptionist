@@ -37,30 +37,61 @@ def whatsapp():
     sender = request.values.get("From", "")
     text = incoming.lower()
  
-    # BASIC Plan Conversation Limit (500)
+    # BASIC Plan Conversation Limit (500 per month)
+
+    from datetime import datetime, timedelta
 
     if not os.path.exists("usage.txt"):
         with open("usage.txt", "w") as f:
             f.write("0")
 
+    if not os.path.exists("sessions.txt"):
+        open("sessions.txt", "w").close()
+
+    # Read current usage
     with open("usage.txt", "r") as f:
         raw = f.read().strip()
         if raw == "":
             raw = "0"
         count = int(raw)
 
-    print("🔥 CURRENT COUNT:", count)
+    # Read sessions
+    with open("sessions.txt", "r") as f:
+        sessions = f.readlines()
 
-    if count >= 500:
-        print("⛔ LIMIT REACHED")
-        resp = MessagingResponse()
-        resp.message("You have reached your monthly conversation limit. Please upgrade your plan.")
-        return str(resp)
+    now = datetime.now()
+    new_conversation = True
+
+    updated_sessions = []
+
+    for line in sessions:
+        saved_sender, saved_time = line.strip().split("|")
+        saved_time = datetime.fromisoformat(saved_time)
+
+        if saved_sender == sender:
+            if now - saved_time < timedelta(hours=24):
+                new_conversation = False
+            else:
+                new_conversation = True
+            updated_sessions.append(f"{sender}|{now.isoformat()}\n")
+        else:
+            updated_sessions.append(line)
+
+    if sender not in [line.split("|")[0] for line in sessions]:
+        updated_sessions.append(f"{sender}|{now.isoformat()}\n")
+
+    # Save updated sessions
+    with open("sessions.txt", "w") as f:
+        f.writelines(updated_sessions)
+
+    # Only increase count if it's a new 24hr conversation
+    if new_conversation:
+        if count >= 500:
+            resp = MessagingResponse()
+            resp.message("You have reached your monthly conversation limit. Please upgrade your plan.")
+            return str(resp)
 
     count += 1
-
-    print("✅ NEW COUNT:", count)
-
     with open("usage.txt", "w") as f:
         f.write(str(count))
 
