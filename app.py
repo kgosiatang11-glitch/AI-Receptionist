@@ -87,7 +87,7 @@ def whatsapp():
     # Only increase count if it's a new 24hr conversation
     if new_conversation:
 
-        if count >= 500:
+        if count >= 3:
             try:
                 twilio_client.messages.create(
                     body="⚠️ BASIC plan limit reached (500 conversations). Please upgrade client.",
