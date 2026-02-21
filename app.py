@@ -26,6 +26,26 @@ twilio_client = TwilioClient(
 def health():
     return "AI Receptionist is running"
 
+def create_calendar_event(summary, start_time, end_time):
+    event = {
+        'summary': summary,
+        'start': {
+            'dateTime': start_time,
+            'timeZone': 'Africa/Gaborone',
+        },
+        'end': {
+            'dateTime': end_time,
+            'timeZone': 'Africa/Gaborone',
+        },
+    }
+
+    created_event = calendar_service.events().insert(
+        calendarId='b309455c5e8c13655e9e363d0c7c59484f14ffac33c8e800bbfdd3be4e1781ff@group.calendar.google.com',
+        body=event
+    ).execute()
+
+    return created_event.get('htmlLink')
+
 @app.route("/whatsapp", methods=["GET", "POST"])
 def whatsapp():
     resp = MessagingResponse()
@@ -36,6 +56,20 @@ def whatsapp():
     incoming = request.values.get("Body", "")
     sender = request.values.get("From", "")
     text = incoming.lower()
+    
+    if "book test" in text:
+    start_time = "2026-02-23T15:00:00"
+    end_time = "2026-02-23T16:00:00"
+
+    link = create_calendar_event(
+        f"{BUSINESS_NAME} Booking Test",
+        start_time,
+        end_time
+    )
+
+    resp = MessagingResponse()
+    resp.message(f"✅ Booking confirmed.\nView: {link}")
+    return str(resp)
  
     # BASIC Plan Conversation Limit (500 per month)
 
