@@ -62,7 +62,7 @@ def whatsapp():
         end_time = "2026-02-23T16:00:00"
 
         link = create_calendar_event(
-            f"{10By20@FNB World of golf} Booking Test",
+            "10By20@FNB World of golf} Booking Test",
             start_time,
             end_time
         )
