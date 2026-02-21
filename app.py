@@ -58,14 +58,14 @@ def whatsapp():
     text = incoming.lower()
     
     if "book test" in text:
-    start_time = "2026-02-23T15:00:00"
-    end_time = "2026-02-23T16:00:00"
+        start_time = "2026-02-23T15:00:00"
+        end_time = "2026-02-23T16:00:00"
 
-    link = create_calendar_event(
-        f"{BUSINESS_NAME} Booking Test",
-        start_time,
-        end_time
-    )
+        link = create_calendar_event(
+            f"{BUSINESS_NAME} Booking Test",
+            start_time,
+            end_time
+        )
 
     resp = MessagingResponse()
     resp.message(f"✅ Booking confirmed.\nView: {link}")
