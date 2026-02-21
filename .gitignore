@@ -2,4 +2,6 @@
 venv/
 __pycache__/
 logs.txt
+service_account.json
+sessions.txt
 users.txt
