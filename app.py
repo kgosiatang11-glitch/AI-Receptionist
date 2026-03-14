@@ -56,6 +56,11 @@ def whatsapp():
     incoming = request.values.get("Body", "")
     sender = request.values.get("From", "")
     text = incoming.lower()
+
+    if text in ["hi", "hello", "hey"]:
+        resp = MessagingResponse()
+        resp.message("Hi 👋 How can I help you today?")
+        return str(resp)
     
     if "book test" in text:
         start_time = "2026-02-23T15:00:00"
@@ -70,11 +75,6 @@ def whatsapp():
     resp = MessagingResponse()
     resp.message(f"✅ Booking confirmed.\nView: {link}")
     return str(resp)
-
-    if text in ["hi", "hello", "hey"]:
-        resp = MessagingResponse()
-        resp.message("Hi 👋 How can I help you today?")
-        return str(resp)
  
     # BASIC Plan Conversation Limit (500 per month)
 
