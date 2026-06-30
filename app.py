@@ -26,14 +26,12 @@ BOT_STATE_FILE = STATE_DIR / "bot_state.txt"
 OWNER = os.getenv("OWNER_WHATSAPP", "whatsapp:+26771298601")
 MONTHLY_CONVERSATION_LIMIT = int(os.getenv("MONTHLY_CONVERSATION_LIMIT", "500"))
 
-BOOKING_URL = os.getenv("BOOKING_URL", "https://bluetree.playbypoint.com")
-BUSINESS_NAME = os.getenv("BUSINESS_NAME", "10by20 Padel Club")
-BUSINESS_LOCATION = os.getenv(
-    "BUSINESS_LOCATION", "FNB World of Golf @ Bluetree, Maruapula"
-)
+BUSINESS_NAME = os.getenv("BUSINESS_NAME", "SmartDesk AI")
+BUSINESS_LOCATION = os.getenv("BUSINESS_LOCATION", "Your business")
 BUSINESS_GREETING = os.getenv(
     "BUSINESS_GREETING",
-    f"Hi! Thank you for contacting {BUSINESS_NAME}. How can I help you today?",
+    "Hello! I’m SmartDesk AI, your AI WhatsApp receptionist. "
+    "We are open 24 hours a day, 7 days a week. How can I help you today?",
 )
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", DEFAULT_TWILIO_NUMBER)
 
@@ -52,22 +50,20 @@ twilio_client = (
 )
 
 SYSTEM_PROMPT = f"""
-You are the official WhatsApp receptionist for {BUSINESS_NAME} located at {BUSINESS_LOCATION}.
+You are SmartDesk AI, a professional WhatsApp receptionist for {BUSINESS_NAME}.
 
 Your job:
-- Help customers book courts
-- Provide pricing information
-- Share opening hours
-- Explain padel rules, scoring, equipment, and benefits
-- Answer questions about the club and facilities
+- Introduce SmartDesk AI and explain the services we provide.
+- Explain that the service is available 24 hours a day, 7 days a week.
+- Describe the AI receptionist services offered to businesses.
+- Explain how SmartDesk AI works for business clients.
+- Answer questions about setup, support, and WhatsApp integration.
 
 STRICT RULES:
-- Only answer questions related to padel or {BUSINESS_NAME}.
-- If a question is unrelated (politics, weather, world news, crypto, coding, general knowledge, etc.), politely redirect the conversation back to the club.
-- Do NOT answer unrelated questions.
-- Keep responses under 2 sentences.
-- Be friendly, confident, and professional.
-- Encourage bookings when appropriate.
+- Keep responses clear, friendly, and professional.
+- Focus on business support and AI receptionist services.
+- Do not mention any padel club, pricing, or booking links.
+- Keep responses under 2 sentences when possible.
 - Never mention that you are an AI.
 """.strip()
 
@@ -218,44 +214,37 @@ def should_limit_conversation(count: int) -> bool:
 
 def get_rule_based_reply(text: str) -> str | None:
     if text in {"hi", "hello", "hey"}:
-        return "Hi! How can I help you today?"
+        return BUSINESS_GREETING
 
-    if "book" in text or "booking" in text:
+    if matches_any(text, ("service", "services", "offer", "offering")):
         return (
-            f"To make a booking, please visit: {BOOKING_URL}\n\n"
-            "Let us know if you need anything else."
+            "SmartDesk AI offers:\n"
+            "- AI WhatsApp Receptionists\n"
+            "- 24/7 Automated Customer Support\n"
+            "- Appointment & Booking Automation\n"
+            "- WhatsApp Business Integration\n"
+            "- Custom AI Solutions for Businesses\n"
+            "- AI Setup and Support"
         )
 
-    if matches_any(text, ("price", "rates", "cost", "how much", "fee", "court price")):
+    if matches_any(text, ("how does", "how it works", "process", "work")):
         return (
-            "Court Rates:\n\n"
-            "Weekdays:\n"
-            "07:00-09:00 P260/hr\n"
-            "09:00-16:00 P120/hr\n"
-            "16:00-18:00 P260/hr\n"
-            "18:00-21:00 P340/hr\n\n"
-            "Weekends:\n"
-            "07:00-18:00 P260/hr\n"
-            "18:00-21:00 P340/hr\n\n"
-            "Racket Rental:\n"
-            "P50 per person\n\n"
-            f"To secure your preferred time, book here:\n{BOOKING_URL}"
+            "SmartDesk AI works in 5 simple steps:\n"
+            "1. A business tells us about its services.\n"
+            "2. We configure the AI with the business information.\n"
+            "3. We connect it to the business's WhatsApp number.\n"
+            "4. The AI automatically answers customer questions, provides business information, and assists with bookings 24/7.\n"
+            "5. The business saves time and never misses customer enquiries."
         )
 
-    if matches_any(text, ("location", "where are you", "where is", "address")):
-        return f"We are located at {BUSINESS_LOCATION}."
+    if matches_any(text, ("hours", "opening hours", "open", "24/7", "24 hours", "7 days")):
+        return "We are open 24 hours a day, 7 days a week."
 
-    if matches_any(text, ("walk-in", "walk in", "walkins", "walk ins")):
-        return "Yes, walk-ins are welcome, subject to court availability."
+    if matches_any(text, ("who are you", "who is", "about", "introduce")):
+        return "I’m SmartDesk AI, a smart AI receptionist for businesses."
 
-    if matches_any(text, ("payment", "pay", "card", "eft")):
-        return "We accept EFT and card payments."
-
-    if matches_any(text, ("hours", "opening hours", "open today", "closing time", "what time")):
-        return (
-            "We are open daily from 07:00 to 21:00.\n\n"
-            f"You can book your session here:\n{BOOKING_URL}"
-        )
+    if matches_any(text, ("book", "booking", "appointment", "schedule")):
+        return "We can help automate bookings and appointment requests for your business."
 
     return None
 
@@ -267,8 +256,8 @@ def should_escalate(text: str) -> bool:
 def generate_ai_reply(incoming: str) -> str:
     if client is None:
         return (
-            "Thanks for your message. Our team can help with club questions and bookings, "
-            f"and you can book directly here: {BOOKING_URL}"
+            "Thanks for your message. SmartDesk AI helps businesses automate customer support "
+            "and answer enquiries on WhatsApp 24/7."
         )
 
     response = client.chat.completions.create(
@@ -283,7 +272,7 @@ def generate_ai_reply(incoming: str) -> str:
 
 @app.route("/")
 def health() -> str:
-    return "AI Receptionist is running"
+    return "SmartDesk AI is running"
 
 
 @app.route("/whatsapp", methods=["GET", "POST"])
@@ -316,11 +305,25 @@ def whatsapp() -> str:
         notify_owner_of_limit(usage_count)
         return twiml_message(
             "We are temporarily unavailable on WhatsApp right now. "
-            "Please contact the club directly for help with your booking."
+            "Please contact the business directly for help."
         )
 
     if not user_exists(sender):
         add_user(sender)
+
+        if should_escalate(text):
+            notify_owner_of_escalation(sender, incoming)
+            reply = "Thank you. A team member will contact you shortly."
+            log_message("USER", incoming)
+            log_message("BOT", reply)
+            return twiml_message(reply)
+
+        rule_based_reply = get_rule_based_reply(text)
+        if rule_based_reply:
+            log_message("USER", incoming)
+            log_message("BOT", rule_based_reply)
+            return twiml_message(rule_based_reply)
+
         log_message("BOT", BUSINESS_GREETING)
         return twiml_message(BUSINESS_GREETING)
 

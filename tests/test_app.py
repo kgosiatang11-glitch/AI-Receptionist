@@ -42,14 +42,23 @@ class ReceptionistAppTests(unittest.TestCase):
             data={"Body": body, "From": sender},
         ).data.decode("utf-8")
 
-    def test_first_message_gets_welcome(self):
+    def test_first_message_introduces_smartdesk_ai(self):
         response = self.post_message("Hello there")
-        self.assertIn("Thank you for contacting", response)
+        self.assertIn("SmartDesk AI", response)
+        self.assertIn("24 hours a day", response)
+        self.assertIn("7 days a week", response)
 
-    def test_second_message_uses_rule_based_reply(self):
-        self.post_message("Hello there")
-        response = self.post_message("What are your prices?")
-        self.assertIn("Court Rates", response)
+    def test_services_request_lists_smartdesk_services(self):
+        response = self.post_message("What services do you offer?")
+        self.assertIn("AI WhatsApp Receptionists", response)
+        self.assertIn("24/7 Automated Customer Support", response)
+        self.assertIn("Appointment &amp; Booking Automation", response)
+
+    def test_how_it_works_reply_lists_the_process(self):
+        response = self.post_message("How does SmartDesk AI work?")
+        self.assertIn("A business tells us about its services.", response)
+        self.assertIn("We connect it to the business's WhatsApp number.", response)
+        self.assertIn("never misses customer enquiries", response)
 
     def test_human_escalation_path_is_reachable(self):
         self.post_message("Hello there")
