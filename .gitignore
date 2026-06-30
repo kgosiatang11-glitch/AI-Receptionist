@@ -5,3 +5,6 @@ logs.txt
 service_account.json
 sessions.txt
 users.txt
+usage.txt
+bot_state.txt
+*.pyc

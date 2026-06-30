@@ -1,317 +1,351 @@
-from flask import Flask, request
+from __future__ import annotations
+
+import os
+from datetime import datetime, timedelta
+from pathlib import Path
+from threading import Lock
+
 from dotenv import load_dotenv
+from flask import Flask, request
+from openai import OpenAI
+from twilio.rest import Client as TwilioClient
+from twilio.twiml.messaging_response import MessagingResponse
+
 load_dotenv()
 
-from twilio.twiml.messaging_response import MessagingResponse
-from openai import OpenAI
-import os
-from datetime import datetime
-import os.path
+TIMEZONE = os.getenv("BUSINESS_TIMEZONE", "Africa/Gaborone")
+DEFAULT_TWILIO_NUMBER = "whatsapp:+14155238886"
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+STATE_DIR = Path(os.getenv("STATE_DIR", "."))
+USAGE_FILE = STATE_DIR / "usage.txt"
+SESSIONS_FILE = STATE_DIR / "sessions.txt"
+USERS_FILE = STATE_DIR / "users.txt"
+LOG_FILE = STATE_DIR / "logs.txt"
+BOT_STATE_FILE = STATE_DIR / "bot_state.txt"
+
+OWNER = os.getenv("OWNER_WHATSAPP", "whatsapp:+26771298601")
+MONTHLY_CONVERSATION_LIMIT = int(os.getenv("MONTHLY_CONVERSATION_LIMIT", "500"))
+
+BOOKING_URL = os.getenv("BOOKING_URL", "https://bluetree.playbypoint.com")
+BUSINESS_NAME = os.getenv("BUSINESS_NAME", "10by20 Padel Club")
+BUSINESS_LOCATION = os.getenv(
+    "BUSINESS_LOCATION", "FNB World of Golf @ Bluetree, Maruapula"
+)
+BUSINESS_GREETING = os.getenv(
+    "BUSINESS_GREETING",
+    f"Hi! Thank you for contacting {BUSINESS_NAME}. How can I help you today?",
+)
+TWILIO_FROM_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", DEFAULT_TWILIO_NUMBER)
 
 app = Flask(__name__)
-BOT_ACTIVE = True
+state_lock = Lock()
 
-OWNER = "whatsapp:+26771298601"
+openai_api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=openai_api_key) if openai_api_key else None
 
-from twilio.rest import Client as TwilioClient
-
-twilio_client = TwilioClient(
-    os.getenv("TWILIO_ACCOUNT_SID"),
-    os.getenv("TWILIO_AUTH_TOKEN")
+twilio_account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+twilio_auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+twilio_client = (
+    TwilioClient(twilio_account_sid, twilio_auth_token)
+    if twilio_account_sid and twilio_auth_token
+    else None
 )
 
-@app.route("/")
-def health():
-    return "AI Receptionist is running"
+SYSTEM_PROMPT = f"""
+You are the official WhatsApp receptionist for {BUSINESS_NAME} located at {BUSINESS_LOCATION}.
 
-def create_calendar_event(summary, start_time, end_time):
-    event = {
-        'summary': summary,
-        'start': {
-            'dateTime': start_time,
-            'timeZone': 'Africa/Gaborone',
-        },
-        'end': {
-            'dateTime': end_time,
-            'timeZone': 'Africa/Gaborone',
-        },
+Your job:
+- Help customers book courts
+- Provide pricing information
+- Share opening hours
+- Explain padel rules, scoring, equipment, and benefits
+- Answer questions about the club and facilities
+
+STRICT RULES:
+- Only answer questions related to padel or {BUSINESS_NAME}.
+- If a question is unrelated (politics, weather, world news, crypto, coding, general knowledge, etc.), politely redirect the conversation back to the club.
+- Do NOT answer unrelated questions.
+- Keep responses under 2 sentences.
+- Be friendly, confident, and professional.
+- Encourage bookings when appropriate.
+- Never mention that you are an AI.
+""".strip()
+
+
+def ensure_state_files() -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    defaults = {
+        USAGE_FILE: "0",
+        SESSIONS_FILE: "",
+        USERS_FILE: "",
+        LOG_FILE: "",
+        BOT_STATE_FILE: "on",
     }
 
-    created_event = calendar_service.events().insert(
-        calendarId='b309455c5e8c13655e9e363d0c7c59484f14ffac33c8e800bbfdd3be4e1781ff@group.calendar.google.com',
-        body=event
-    ).execute()
+    for path, default_content in defaults.items():
+        if not path.exists():
+            path.write_text(default_content, encoding="utf-8")
 
-    return created_event.get('htmlLink')
+
+def read_usage_count() -> int:
+    raw_value = USAGE_FILE.read_text(encoding="utf-8").strip()
+    return int(raw_value or "0")
+
+
+def write_usage_count(count: int) -> None:
+    USAGE_FILE.write_text(str(count), encoding="utf-8")
+
+
+def load_sessions() -> dict[str, datetime]:
+    sessions: dict[str, datetime] = {}
+    for line in SESSIONS_FILE.read_text(encoding="utf-8").splitlines():
+        if "|" not in line:
+            continue
+        sender, saved_time = line.split("|", 1)
+        try:
+            sessions[sender] = datetime.fromisoformat(saved_time)
+        except ValueError:
+            continue
+    return sessions
+
+
+def save_sessions(sessions: dict[str, datetime]) -> None:
+    lines = [
+        f"{sender}|{saved_time.isoformat()}"
+        for sender, saved_time in sorted(sessions.items())
+    ]
+    content = "\n".join(lines)
+    if content:
+        content += "\n"
+    SESSIONS_FILE.write_text(content, encoding="utf-8")
+
+
+def is_bot_active() -> bool:
+    state = BOT_STATE_FILE.read_text(encoding="utf-8").strip().lower()
+    return state != "off"
+
+
+def set_bot_active(active: bool) -> None:
+    BOT_STATE_FILE.write_text("on" if active else "off", encoding="utf-8")
+
+
+def register_conversation(sender: str, now: datetime) -> tuple[bool, int]:
+    with state_lock:
+        ensure_state_files()
+        sessions = load_sessions()
+        last_seen = sessions.get(sender)
+        is_new_conversation = last_seen is None or now - last_seen >= timedelta(hours=24)
+        sessions[sender] = now
+        save_sessions(sessions)
+
+        count = read_usage_count()
+        if is_new_conversation:
+            count += 1
+            write_usage_count(count)
+        return is_new_conversation, count
+
+
+def user_exists(sender: str) -> bool:
+    users = USERS_FILE.read_text(encoding="utf-8").splitlines()
+    return sender in users
+
+
+def add_user(sender: str) -> None:
+    with state_lock:
+        ensure_state_files()
+        users = USERS_FILE.read_text(encoding="utf-8").splitlines()
+        if sender not in users:
+            USERS_FILE.write_text(
+                "".join(f"{user}\n" for user in [*users, sender]), encoding="utf-8"
+            )
+
+
+def log_message(source: str, message: str) -> None:
+    with state_lock:
+        ensure_state_files()
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        with LOG_FILE.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"{timestamp} | {source}: {message}\n")
+
+
+def twiml_message(body: str) -> str:
+    response = MessagingResponse()
+    response.message(body)
+    return str(response)
+
+
+def normalize_text(message: str) -> str:
+    return " ".join(message.lower().split())
+
+
+def matches_any(text: str, phrases: tuple[str, ...]) -> bool:
+    return any(phrase in text for phrase in phrases)
+
+
+def notify_owner_of_limit(count: int) -> None:
+    if not twilio_client:
+        return
+    try:
+        twilio_client.messages.create(
+            body=(
+                f"Monthly conversation limit reached for {BUSINESS_NAME}. "
+                f"Current counted conversations: {count}."
+            ),
+            from_=TWILIO_FROM_NUMBER,
+            to=OWNER,
+        )
+    except Exception as exc:  # pragma: no cover - defensive logging
+        print("Owner notification failed:", exc)
+
+
+def notify_owner_of_escalation(sender: str, incoming: str) -> None:
+    if not twilio_client:
+        return
+    try:
+        twilio_client.messages.create(
+            body=f"Escalation Request:\nFrom: {sender}\nMessage: {incoming}",
+            from_=TWILIO_FROM_NUMBER,
+            to=OWNER,
+        )
+    except Exception as exc:  # pragma: no cover - defensive logging
+        print("Escalation failed:", exc)
+
+
+def should_limit_conversation(count: int) -> bool:
+    return count > MONTHLY_CONVERSATION_LIMIT
+
+
+def get_rule_based_reply(text: str) -> str | None:
+    if text in {"hi", "hello", "hey"}:
+        return "Hi! How can I help you today?"
+
+    if "book" in text or "booking" in text:
+        return (
+            f"To make a booking, please visit: {BOOKING_URL}\n\n"
+            "Let us know if you need anything else."
+        )
+
+    if matches_any(text, ("price", "rates", "cost", "how much", "fee", "court price")):
+        return (
+            "Court Rates:\n\n"
+            "Weekdays:\n"
+            "07:00-09:00 P260/hr\n"
+            "09:00-16:00 P120/hr\n"
+            "16:00-18:00 P260/hr\n"
+            "18:00-21:00 P340/hr\n\n"
+            "Weekends:\n"
+            "07:00-18:00 P260/hr\n"
+            "18:00-21:00 P340/hr\n\n"
+            "Racket Rental:\n"
+            "P50 per person\n\n"
+            f"To secure your preferred time, book here:\n{BOOKING_URL}"
+        )
+
+    if matches_any(text, ("location", "where are you", "where is", "address")):
+        return f"We are located at {BUSINESS_LOCATION}."
+
+    if matches_any(text, ("walk-in", "walk in", "walkins", "walk ins")):
+        return "Yes, walk-ins are welcome, subject to court availability."
+
+    if matches_any(text, ("payment", "pay", "card", "eft")):
+        return "We accept EFT and card payments."
+
+    if matches_any(text, ("hours", "opening hours", "open today", "closing time", "what time")):
+        return (
+            "We are open daily from 07:00 to 21:00.\n\n"
+            f"You can book your session here:\n{BOOKING_URL}"
+        )
+
+    return None
+
+
+def should_escalate(text: str) -> bool:
+    return matches_any(text, ("manager", "human", "call me", "person", "someone"))
+
+
+def generate_ai_reply(incoming: str) -> str:
+    if client is None:
+        return (
+            "Thanks for your message. Our team can help with club questions and bookings, "
+            f"and you can book directly here: {BOOKING_URL}"
+        )
+
+    response = client.responses.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        input=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": incoming},
+        ],
+    )
+    return response.output_text.strip()
+
+
+@app.route("/")
+def health() -> str:
+    return "AI Receptionist is running"
+
 
 @app.route("/whatsapp", methods=["GET", "POST"])
-def whatsapp():
-    resp = MessagingResponse()
-    print("🔥 WHATSAPP HIT RECEIVED")
-    print("🚀 VERSION: USAGE COUNTER V2")
-    global BOT_ACTIVE
-
-    incoming = request.values.get("Body", "")
-    sender = request.values.get("From", "")
-    text = incoming.lower()
-
-    if text in ["hi", "hello", "hey"]:
-        resp = MessagingResponse()
-        resp.message("Hi 👋 How can I help you today?")
-        return str(resp)
-    
-    if "book test" in text:
-        start_time = "2026-02-23T15:00:00"
-        end_time = "2026-02-23T16:00:00"
-
-    link = create_calendar_event(
-        "10By20 FNB World of Golf Booking Test",
-        start_time,
-        end_time
-    )
-
-    resp = MessagingResponse()
-    resp.message(f"✅ Booking confirmed.\nView: {link}")
-    return str(resp)
- 
-    # BASIC Plan Conversation Limit (500 per month)
-
-    from datetime import datetime, timedelta
-
-    if not os.path.exists("usage.txt"):
-        with open("usage.txt", "w") as f:
-            f.write("0")
-
-    if not os.path.exists("sessions.txt"):
-        open("sessions.txt", "w").close()
-
-    # Read current usage
-    with open("usage.txt", "r") as f:
-        raw = f.read().strip()
-        if raw == "":
-             raw = "0"
-        count = int(raw)
-
-    # Read sessions
-    with open("sessions.txt", "r") as f:
-        sessions = f.readlines()
-
+def whatsapp() -> str:
+    incoming = request.values.get("Body", "").strip()
+    sender = request.values.get("From", "").strip()
+    text = normalize_text(incoming)
     now = datetime.now()
-    new_conversation = True
 
-    updated_sessions = []
+    ensure_state_files()
+    print("WHATSAPP HIT RECEIVED")
+    print("VERSION: STABLE FLOW")
 
-    for line in sessions:
-        saved_sender, saved_time = line.strip().split("|")
-        saved_time = datetime.fromisoformat(saved_time)
+    if not sender:
+        return twiml_message("We could not identify your WhatsApp number. Please try again.")
 
-        if saved_sender == sender:
-            if now - saved_time < timedelta(hours=24):
-                new_conversation = False
-            else:
-                new_conversation = True
-            updated_sessions.append(f"{sender}|{now.isoformat()}\n")
-        else:
-            updated_sessions.append(line)
-
-    if sender not in [line.split("|")[0] for line in sessions]:
-        updated_sessions.append(f"{sender}|{now.isoformat()}\n")
-
-    # Save updated sessions
-    with open("sessions.txt", "w") as f:
-        f.writelines(updated_sessions)
-
-    # Only increase count if it's a new 24hr conversation
-    if new_conversation:
-
-        if count >= 3:
-            try:
-                twilio_client.messages.create(
-                    body="⚠️ BASIC plan limit reached (500 conversations). Please upgrade client.",
-                    from_="whatsapp:+14155238886",
-                    to=OWNER
-             )
-            except Exception as e:
-                print("Owner notification failed:", e)
-
-            print("⚠️ LIMIT REACHED - OWNER NOTIFIED")
-
-        resp = MessagingResponse()
-        resp.message("You have reached your monthly conversation limit. Please upgrade your plan.")
-        return str(resp)
-
-    # Increase count only if under limit
-    count += 1
-    print("✅ NEW COUNT:", count)
-
-    with open("usage.txt", "w") as f:
-        f.write(str(count))
-    # Owner controls
     if sender == OWNER and text == "/off":
-        BOT_ACTIVE = False
-        resp = MessagingResponse()
-        resp.message("Bot turned OFF")
-        return str(resp)
+        set_bot_active(False)
+        return twiml_message("Bot turned OFF")
 
     if sender == OWNER and text == "/on":
-        BOT_ACTIVE = True
-        resp = MessagingResponse()
-        resp.message("Bot turned ON")
-        return str(resp)
+        set_bot_active(True)
+        return twiml_message("Bot turned ON")
 
-    if not BOT_ACTIVE:
-        resp = MessagingResponse()
-        return str(resp)
+    if not is_bot_active():
+        return str(MessagingResponse())
 
-    # Create users file if missing
-    if not os.path.exists("users.txt"):
-        open("users.txt", "w").close()
-
-    with open("users.txt", "r") as f:
-        users = f.read().splitlines()
-
-    # First time welcome
-    if sender not in users:
-        with open("users.txt", "a") as f:
-            f.write(sender + "\n")
-
-        resp = MessagingResponse()
-        resp.message(
-            "Hi 👋 Thank you for contacting 10by20@FNB World of Golf! How can I help you 😊 "
+    is_new_conversation, usage_count = register_conversation(sender, now)
+    if is_new_conversation and should_limit_conversation(usage_count):
+        notify_owner_of_limit(usage_count)
+        return twiml_message(
+            "We are temporarily unavailable on WhatsApp right now. "
+            "Please contact the club directly for help with your booking."
         )
-        return str(resp)
 
-    # Greeting
-    if text in ["hi", "hello", "hey"]:
-        resp = MessagingResponse()
-        resp.message("Hi 👋 How can I help you today?")
-        return str(resp)
+    if not user_exists(sender):
+        add_user(sender)
+        log_message("BOT", BUSINESS_GREETING)
+        return twiml_message(BUSINESS_GREETING)
 
-    # Booking shortcut
-    if "book" in text:
-        resp = MessagingResponse()
-        resp.message(
-            "To make a booking, please visit: https://bluetree.playbypoint.com\n\n"
-            "Let us know if you need anything else 🙂"
-        )
-        return str(resp)
+    if not incoming:
+        return twiml_message("Please send a message and I will be happy to help.")
 
-    # Prices
-    if any(word in text for word in ["price", "rates", "cost", "how much", "fee", "court price"]):
-        resp = MessagingResponse()
-        resp.message(
-            "🎾 Court Rates:\n\n"
-            "Weekdays:\n"
-            "07:00–09:00 P260/hr\n"
-            "09:00–16:00 P120/hr\n"
-            "16:00–18:00 P260/hr\n"
-            "18:00–21:00 P340/hr\n\n"
-            "Weekends:\n"
-            "07:00–18:00 P260/hr\n"
-            "18:00–21:00 P340/hr\n\n"
-            "🎾 Racket Rental:\nP50 per person"
-            "To secure your preferred time, book here:\nhttps://bluetree.playbypoint.com"
-        )
-        return str(resp)
+    rule_based_reply = get_rule_based_reply(text)
+    if rule_based_reply:
+        log_message("USER", incoming)
+        log_message("BOT", rule_based_reply)
+        return twiml_message(rule_based_reply)
 
-    # Location
-    if "location" in text or "where" in text:
-        resp = MessagingResponse()
-        resp.message("📍 We are located at FNB World of Golf@ Bluetree, Maruapula.")
-        return str(resp)
+    if should_escalate(text):
+        notify_owner_of_escalation(sender, incoming)
+        reply = "Thank you. A team member will contact you shortly."
+        log_message("USER", incoming)
+        log_message("BOT", reply)
+        return twiml_message(reply)
 
-    # Walk-ins
-    if "walk" in text:
-        resp = MessagingResponse()
-        resp.message("Yes, walk-ins are welcome (subject to court availability).")
-        return str(resp)
+    log_message("USER", incoming)
+    reply = generate_ai_reply(incoming)
+    log_message("BOT", reply)
+    return twiml_message(reply)
 
-    # Payment
-    if "payment" in text or "pay" in text:
-        resp = MessagingResponse()
-        resp.message("We accept EFT and card swipe.")
-        return str(resp)
-
-    # Opening hours
-    if "hours" in text or "open" in text or "closing" in text:
-        resp = MessagingResponse()
-        resp.message(
-           "We are open daily from 0700 to 2100.\n\n"
-           "You can book your session here:\nhttps://bluetree.playbypoint.com"
-    )
-    return str(resp)
-
-    # Human escalation
-    if any(word in text for word in
-    ["manager", "human", "call", "person"]):
-        try:
-            twilio_client.messages.create(
-                body=f"Escalation Request:\nFrom: {sender}\nMessage: {incoming}",
-                from_="whatsapp:+14155238886",
-                to=OWNER
-            )
-        except Exception as e:
-            print("Escalation failed:", e)
-
-        resp = MessagingResponse()
-        resp.message("Thank you. A team member will contact you shortly.")
-        return str(resp)
-
-    # Log user message
-    with open("logs.txt", "a", encoding="utf-8") as f:
-        f.write(f"{datetime.now()} | USER: {incoming}\n")
-    
-    # OpenAI fallback
-    response = client.responses.create(
-    model="gpt-4o-mini",
-    input=[
-        {
-            "role": "system",
-            "content": """
-    You are the official WhatsApp receptionist for 10by20 Padel Club located at FNB World of Golf @ Bluetree, Maruapula.
-
-    Your job:
-    - Help customers book courts
-    - Provide pricing information
-    - Share opening hours
-    - Explain padel rules, scoring, equipment, and benefits
-    - Answer questions about the club and facilities
-
-    STRICT RULES:
-    - Only answer questions related to padel or 10by20 Padel Club.
-    - If a question is unrelated (politics, weather, world news, crypto, coding, general knowledge, etc.), politely redirect the conversation back to the club.
-    - Do NOT answer unrelated questions.
-    - Keep responses under 2 sentences.
-    - Be friendly, confident, and professional.
-    - Encourage bookings when appropriate.
-    - Never mention that you are an AI.
-    """
-             },
-             {
-                 "role": "user",
-                 "content": incoming
-            }
-         ]
-    )
-
-    reply = response.output_text
-    
-    resp = MessagingResponse()
-    resp.message(reply)
-
-    # Log bot reply
-    with open("logs.txt", "a", encoding="utf-8") as f:
-        f.write(f"{datetime.now()} | BOT: {reply}\n\n")
-
-
-    return str(resp)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
-
-
-
