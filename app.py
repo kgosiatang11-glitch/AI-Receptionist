@@ -6,6 +6,7 @@ from pathlib import Path
 from threading import Lock
 
 from dotenv import load_dotenv
+import re
 from flask import Flask, request
 from openai import OpenAI
 from twilio.rest import Client as TwilioClient
@@ -212,11 +213,77 @@ def should_limit_conversation(count: int) -> bool:
     return count > MONTHLY_CONVERSATION_LIMIT
 
 
+def detect_intent(text: str) -> tuple[str, dict]:
+    info: dict = {}
+    t = text.lower()
+
+    # Explicit 'how it works' patterns
+    how_patterns = [
+        r"\bhow\b.*\bwork\b",
+        r"\bhow does\b.*\bwork\b",
+        r"\bhow do\b.*\bwork\b",
+        r"\bhow it works\b",
+        r"\bexplain\b.*\bwork\b",
+    ]
+    for p in how_patterns:
+        if re.search(p, t):
+            return "how_it_works", info
+
+    # Compatibility patterns (e.g., "Can the system work for my salon?")
+    compat_patterns = [
+        r"\b(can|could|does|do|will)\b.*\b(work|be used|be suitable|fit|help)\b.*\bfor\b",
+        r"\bworks for\b",
+        r"\bsuitable for\b",
+        r"\buse for\b",
+        r"\bcan the (system|it|smartdesk|smartdesk ai)\b",
+    ]
+    for p in compat_patterns:
+        if re.search(p, t):
+            business_types = [
+                "salon",
+                "gym",
+                "restaurant",
+                "tattoo",
+                "clinic",
+                "hotel",
+                "law firm",
+                "real estate",
+                "school",
+                "barber",
+                "bakery",
+                "shop",
+            ]
+            for b in business_types:
+                if re.search(rf"\b{re.escape(b)}s?\b", t):
+                    info["business"] = b
+                    break
+            return "compatibility", info
+
+    if matches_any(t, ("service", "services", "offer", "offering")):
+        return "services", info
+
+    if matches_any(t, ("hours", "opening hours", "open", "24/7", "24 hours", "7 days")):
+        return "hours", info
+
+    if t in {"hi", "hello", "hey"}:
+        return "greeting", info
+
+    if matches_any(t, ("who are you", "who is", "about", "introduce")):
+        return "who", info
+
+    if matches_any(t, ("book", "booking", "appointment", "schedule")):
+        return "booking", info
+
+    return "unknown", info
+
+
 def get_rule_based_reply(text: str) -> str | None:
-    if text in {"hi", "hello", "hey"}:
+    intent, info = detect_intent(text)
+
+    if intent == "greeting":
         return BUSINESS_GREETING
 
-    if matches_any(text, ("service", "services", "offer", "offering")):
+    if intent == "services":
         return (
             "SmartDesk AI offers:\n"
             "- AI WhatsApp Receptionists\n"
@@ -227,7 +294,7 @@ def get_rule_based_reply(text: str) -> str | None:
             "- AI Setup and Support"
         )
 
-    if matches_any(text, ("how does", "how it works", "process", "work")):
+    if intent == "how_it_works":
         return (
             "SmartDesk AI works in 5 simple steps:\n"
             "1. A business tells us about its services.\n"
@@ -237,13 +304,25 @@ def get_rule_based_reply(text: str) -> str | None:
             "5. The business saves time and never misses customer enquiries."
         )
 
-    if matches_any(text, ("hours", "opening hours", "open", "24/7", "24 hours", "7 days")):
+    if intent == "compatibility":
+        business = info.get("business")
+        if business:
+            return (
+                f"Absolutely! SmartDesk AI can be customized for {business}s. "
+                "It can answer customer questions, provide information about your services and pricing, book appointments, share your business hours and location, and integrate with your existing workflows."
+            )
+        return (
+            "Yes — SmartDesk AI is highly adaptable and can be configured for most business types (salons, gyms, restaurants, clinics, hotels, and more). "
+            "Tell me about your business and I can explain how we would set it up."
+        )
+
+    if intent == "hours":
         return "We are open 24 hours a day, 7 days a week."
 
-    if matches_any(text, ("who are you", "who is", "about", "introduce")):
+    if intent == "who":
         return "I’m SmartDesk AI, a smart AI receptionist for businesses."
 
-    if matches_any(text, ("book", "booking", "appointment", "schedule")):
+    if intent == "booking":
         return "We can help automate bookings and appointment requests for your business."
 
     return None
