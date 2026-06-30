@@ -44,9 +44,7 @@ class ReceptionistAppTests(unittest.TestCase):
 
     def test_first_message_introduces_smartdesk_ai(self):
         response = self.post_message("Hello there")
-        self.assertIn("SmartDesk AI", response)
-        self.assertIn("24 hours a day", response)
-        self.assertIn("7 days a week", response)
+        self.assertIn("Hello and welcome to SmartDesk AI! I'm O'Brien, your AI Receptionist. How can I assist you today?", response)
 
     def test_services_request_lists_smartdesk_services(self):
         response = self.post_message("What services do you offer?")

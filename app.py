@@ -213,6 +213,18 @@ def should_limit_conversation(count: int) -> bool:
     return count > MONTHLY_CONVERSATION_LIMIT
 
 
+def is_greeting_text(text: str) -> bool:
+    """Return True if the text is clearly a greeting at the start of the message.
+
+    Matches: hi, hello, hey, good morning, good afternoon, good evening (case-insensitive)
+    and variants like 'hi there', 'hello!'
+    """
+    if not text:
+        return False
+    t = text.strip().lower()
+    return bool(re.match(r"^(hi|hello|hey|good morning|good afternoon|good evening)\b", t))
+
+
 def detect_intent(text: str) -> tuple[str, dict]:
     info: dict = {}
     t = text.lower()
@@ -389,6 +401,13 @@ def whatsapp() -> str:
 
     if not user_exists(sender):
         add_user(sender)
+
+        # If the first message is a greeting, reply with the exact required greeting
+        if is_greeting_text(incoming):
+            first_greeting = "Hello and welcome to SmartDesk AI! I'm O'Brien, your AI Receptionist. How can I assist you today?"
+            log_message("USER", incoming)
+            log_message("BOT", first_greeting)
+            return twiml_message(first_greeting)
 
         if should_escalate(text):
             notify_owner_of_escalation(sender, incoming)
