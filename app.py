@@ -271,14 +271,14 @@ def generate_ai_reply(incoming: str) -> str:
             f"and you can book directly here: {BOOKING_URL}"
         )
 
-    response = client.responses.create(
+    response = client.chat.completions.create(
         model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        input=[
+        messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": incoming},
         ],
     )
-    return response.output_text.strip()
+    return response.choices[0].message.content.strip()
 
 
 @app.route("/")
