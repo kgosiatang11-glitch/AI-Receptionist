@@ -9,7 +9,7 @@ from threading import Lock
 from dotenv import load_dotenv
 import re
 from intent_router import route_message, detect_intent as detect_intent_router
-from flask import Flask, request
+from flask import Flask, Response, request
 from openai import OpenAI
 from twilio.rest import Client as TwilioClient
 from twilio.twiml.messaging_response import MessagingResponse
@@ -217,10 +217,17 @@ def get_recent_conversation_history(sender: str) -> list[dict[str, str]]:
     return load_conversation_history(sender)[-MAX_CONVERSATION_HISTORY:]
 
 
-def twiml_message(body: str) -> str:
+def twiml_message(body: str = "") -> Response:
+    """Return a Twilio-compatible XML response.
+
+    Twilio reads the reply body from TwiML.  Returning an explicit XML content
+    type prevents an otherwise valid response being treated as an HTML page by
+    a proxy or webhook client.
+    """
     response = MessagingResponse()
-    response.message(body)
-    return str(response)
+    if body:
+        response.message(body)
+    return Response(str(response), status=200, mimetype="application/xml")
 
 
 def normalize_text(message: str) -> str:
@@ -360,10 +367,17 @@ def generate_ai_reply(incoming: str, sender: str | None = None) -> str:
     messages.extend(history)
     messages.append({"role": "user", "content": user_prompt})
 
-    response = client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        messages=messages,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=messages,
+        )
+    except Exception:
+        app.logger.exception("OpenAI reply generation failed")
+        return (
+            "Thanks for your message. We are having a temporary issue, but a team "
+            "member will get back to you shortly."
+        )
 
     # Safely extract the assistant text
     try:
@@ -385,8 +399,17 @@ def health() -> str:
     return "SmartDesk AI is running"
 
 
+@app.errorhandler(Exception)
+def handle_webhook_error(error: Exception) -> Response:
+    """Always give Twilio a valid reply instead of leaving a message unanswered."""
+    app.logger.exception("Unhandled request error", exc_info=error)
+    return twiml_message(
+        "Sorry, we could not process that message right now. Please try again shortly."
+    )
+
+
 @app.route("/whatsapp", methods=["GET", "POST"])
-def whatsapp() -> str:
+def whatsapp() -> Response:
     incoming = request.values.get("Body", "").strip()
     sender = request.values.get("From", "").strip()
     text = normalize_text(incoming)
@@ -408,7 +431,7 @@ def whatsapp() -> str:
         return twiml_message("Bot turned ON")
 
     if not is_bot_active():
-        return str(MessagingResponse())
+        return twiml_message()
 
     is_new_conversation, usage_count = register_conversation(sender, now)
     if is_new_conversation and should_limit_conversation(usage_count):

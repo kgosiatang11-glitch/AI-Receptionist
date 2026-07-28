@@ -48,6 +48,39 @@ class ReceptionistAppTests(unittest.TestCase):
         response = self.post_message("Hello there")
         self.assertIn("Hello and welcome to SmartDesk AI! I'm O'Brien, your AI Receptionist. How can I assist you today?", response)
 
+    def test_whatsapp_replies_with_xml_twiml(self):
+        response = self.client.post(
+            "/whatsapp",
+            data={"Body": "Hello", "From": "whatsapp:+26770000009"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/xml")
+        self.assertIn("<Response>", response.data.decode("utf-8"))
+
+    def test_openai_failure_returns_a_fallback_reply(self):
+        failing_client = type(
+            "FailingClient",
+            (),
+            {
+                "chat": type(
+                    "Chat",
+                    (),
+                    {
+                        "completions": type(
+                            "Completions",
+                            (),
+                            {"create": lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("API unavailable"))},
+                        )()
+                    },
+                )()
+            },
+        )()
+
+        with patch.object(self.app_module, "client", failing_client):
+            response = self.post_message("Please explain your integrations.")
+
+        self.assertIn("temporary issue", response)
+
     def test_services_request_lists_smartdesk_services(self):
         response = self.post_message("What services do you offer?")
         self.assertIn("AI WhatsApp Receptionists", response)
