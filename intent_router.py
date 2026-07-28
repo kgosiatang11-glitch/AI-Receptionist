@@ -31,27 +31,39 @@ BUSINESS_TYPES = [
 
 def detect_intent(text: str) -> Tuple[str, Dict]:
     info: Dict = {}
-    t = (text or "").lower()
+    t = (text or "").lower().strip()
 
     # Greetings
     if re.match(r"^(hi|hello|hey|good morning|good afternoon|good evening|ji)\b", t):
         return "greeting", info
 
-    # About / how it works
-    if re.search(r"\b(how\b.*\bwork|how does .* work|what is smartdesk|what is the system|tell me about|what do you do)\b", t):
-        return "about", info
-
-    # Features (also detect 'services' queries)
-    if re.search(r"\b(features|what can you do|capabilit|what do you offer|what are your features|service|services|offer)\b", t):
-        return "features", info
-
-    # Pricing
-    if re.search(r"\b(price|pricing|cost|how much|plans|subscription)\b", t):
-        return "pricing", info
+    # Booking
+    if re.search(r"\b(book|booking|appointment|schedule|reserve|reservation)\b", t):
+        return "booking", info
 
     # Business hours
-    if re.search(r"\b(hours|opening hours|open|when do you open|what time)\b", t):
+    if re.search(r"\b(hours|opening hours|open|when do you open|what time|working hours)\b", t):
         return "hours", info
+
+    # Pricing
+    if re.search(r"\b(price|pricing|cost|how much|plans|subscription|quote|quotation)\b", t):
+        return "pricing", info
+
+    # Human handoff (only explicit requests)
+    if re.search(r"\b(i want to speak to a human|can someone call me|contact your team|i need customer support|let me speak to sales|speak to sales|talk to a human|speak to customer support|can you connect me to your team|can i speak to sales)\b", t):
+        return "human_handoff", info
+
+    # Contact information
+    if re.search(r"\b(contact|contact us|reach out|phone number|email|address|location|where are you)\b", t):
+        return "contact", info
+
+    # About / how it works
+    if re.search(r"\b(what is smartdesk|what is the system|tell me about smartdesk|tell me about it|what do you do|how does smartdesk work|how does smartdesk ai work|how does it work|how it works|how does it work for businesses)\b", t):
+        return "about", info
+
+    # Features (only explicit feature requests)
+    if re.search(r"\b(show me the features|list your features|what features do you have|what can smartdesk ai do|what features can smartdesk ai do|what are your features|what services do you offer|what services can you provide|what do you offer)\b", t):
+        return "features", info
 
     # Compatibility / business-specific questions
     if re.search(r"\b(can|could|does|do|will)\b.*\b(work|be used|be suitable|fit|help)\b.*\bfor\b", t) or re.search(r"\bworks for\b|\bsuitable for\b|\buse for\b", t):
@@ -91,6 +103,9 @@ def route_message(text: str) -> Dict[str, Optional[str]]:
         features = CONFIG.get("features", [])
         features_text = "\n".join(f"- {f}" for f in features)
         return {"intent": intent, "response": features_text, "use_ai": False}
+
+    if intent == "human_handoff":
+        return {"intent": intent, "response": "Thank you. A team member will contact you shortly.", "use_ai": False}
 
     if intent == "pricing":
         return {"intent": intent, "response": CONFIG.get("pricing"), "use_ai": False}
