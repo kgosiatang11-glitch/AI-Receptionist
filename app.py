@@ -30,6 +30,7 @@ MAX_CONVERSATION_HISTORY = 20
 
 OWNER = os.getenv("OWNER_WHATSAPP", "whatsapp:+26771298601")
 MONTHLY_CONVERSATION_LIMIT = int(os.getenv("MONTHLY_CONVERSATION_LIMIT", "500"))
+OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "10"))
 
 BUSINESS_NAME = os.getenv("BUSINESS_NAME", "SmartDesk AI")
 BUSINESS_LOCATION = os.getenv("BUSINESS_LOCATION", "Your business")
@@ -43,7 +44,15 @@ app = Flask(__name__)
 state_lock = Lock()
 
 openai_api_key = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=openai_api_key) if openai_api_key else None
+client = (
+    OpenAI(
+        api_key=openai_api_key,
+        timeout=OPENAI_TIMEOUT_SECONDS,
+        max_retries=0,
+    )
+    if openai_api_key
+    else None
+)
 
 twilio_account_sid = os.getenv("TWILIO_ACCOUNT_SID")
 twilio_auth_token = os.getenv("TWILIO_AUTH_TOKEN")
@@ -412,12 +421,17 @@ def handle_webhook_error(error: Exception) -> Response:
 def whatsapp() -> Response:
     incoming = request.values.get("Body", "").strip()
     sender = request.values.get("From", "").strip()
+    message_sid = request.values.get("MessageSid", "unknown")
     text = normalize_text(incoming)
     now = datetime.now()
 
     ensure_state_files()
-    print("WHATSAPP HIT RECEIVED")
-    print("VERSION: STABLE FLOW")
+    app.logger.warning(
+        "Inbound WhatsApp webhook received: message_sid=%s sender_present=%s body_present=%s",
+        message_sid,
+        bool(sender),
+        bool(incoming),
+    )
 
     if not sender:
         return twiml_message("We could not identify your WhatsApp number. Please try again.")
