@@ -87,6 +87,19 @@ class ReceptionistAppTests(unittest.TestCase):
         self.assertIn("Is there anything else I can help you with?", body)
         self.assertIn('input="speech"', body)
 
+    def test_voice_uses_the_shared_business_knowledge_routes(self):
+        response = self.client.post(
+            "/voice/continue",
+            data={
+                "CallSid": "CA124",
+                "From": "+26770000011",
+                "SpeechResult": "What businesses does SmartDesk AI work for?",
+            },
+        )
+
+        body = response.data.decode("utf-8")
+        self.assertIn("salons, gyms, restaurants, clinics, hotels", body)
+
     def test_openai_failure_returns_a_fallback_reply(self):
         failing_client = type(
             "FailingClient",

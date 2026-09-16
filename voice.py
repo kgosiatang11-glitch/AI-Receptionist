@@ -40,9 +40,9 @@ def voice_error_twiml() -> Response:
 class VoiceConversationService:
     """Channel adapter for future voice turns.
 
-    A speech provider can pass a verified transcript to ``reply_to_transcript``
-    later.  The injected callable is the existing shared AI service, not a
-    Voice-only OpenAI client.
+    A speech provider sends its verified transcript to ``reply_to_transcript``.
+    The injected callable is the application's shared conversation service,
+    not a Voice-only AI client.
     """
 
     def __init__(self, ai_reply_service: Callable[[str, str | None], str]) -> None:

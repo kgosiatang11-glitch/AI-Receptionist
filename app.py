@@ -407,12 +407,48 @@ def generate_ai_reply(incoming: str, sender: str | None = None) -> str:
     return reply
 
 
+def build_conversation_reply(incoming: str, sender: str | None = None) -> str:
+    """Return a channel-neutral reply using the shared business knowledge flow.
+
+    WhatsApp, Voice, and future channels call this one service so routed
+    business answers, human handoff, OpenAI fallback, and conversation history
+    remain consistent everywhere.
+    """
+    local_greeting = get_greeting_reply(incoming, sender=sender)
+    if local_greeting:
+        if sender:
+            append_conversation_message(sender, "user", incoming)
+            append_conversation_message(sender, "assistant", local_greeting)
+        return local_greeting
+
+    routed = route_message(incoming)
+    routed_reply = routed.get("response")
+    if routed_reply:
+        if sender:
+            append_conversation_message(sender, "user", incoming)
+            append_conversation_message(sender, "assistant", routed_reply)
+        return routed_reply
+
+    if should_escalate(normalize_text(incoming)):
+        if sender:
+            notify_owner_of_escalation(sender, incoming)
+            append_conversation_message(sender, "user", incoming)
+            append_conversation_message(
+                sender,
+                "assistant",
+                "Thank you. A team member will contact you shortly.",
+            )
+        return "Thank you. A team member will contact you shortly."
+
+    return generate_ai_reply(incoming, sender=sender)
+
+
 # Voice receives this existing AI function by dependency injection.  Future
 # transcription can therefore reuse the same prompt, knowledge, history, and
 # OpenAI client as WhatsApp without a separate AI implementation.
 app.register_blueprint(
     create_voice_blueprint(
-        generate_ai_reply,
+        build_conversation_reply,
         event_logger=log_message,
         listen_timeout_seconds=VOICE_LISTEN_TIMEOUT_SECONDS,
         speech_timeout_seconds=VOICE_SPEECH_TIMEOUT_SECONDS,
@@ -481,35 +517,8 @@ def whatsapp() -> Response:
     if not user_exists(sender):
         add_user(sender)
 
-    local_greeting = get_greeting_reply(incoming, sender=sender)
-    if local_greeting:
-        append_conversation_message(sender, "user", incoming)
-        append_conversation_message(sender, "assistant", local_greeting)
-        log_message("USER", incoming)
-        log_message("BOT", local_greeting)
-        return twiml_message(local_greeting)
-
-    # Route first message through intent router
-    routed = route_message(incoming)
-    if routed.get("response"):
-        append_conversation_message(sender, "user", incoming)
-        append_conversation_message(sender, "assistant", routed.get("response"))
-        log_message("USER", incoming)
-        log_message("BOT", routed.get("response"))
-        return twiml_message(routed.get("response"))
-
-    if should_escalate(text):
-        notify_owner_of_escalation(sender, incoming)
-        reply = "Thank you. A team member will contact you shortly."
-        append_conversation_message(sender, "user", incoming)
-        append_conversation_message(sender, "assistant", reply)
-        log_message("USER", incoming)
-        log_message("BOT", reply)
-        return twiml_message(reply)
-
     log_message("USER", incoming)
-    # Use AI for fallback / contextual replies
-    reply = generate_ai_reply(incoming, sender=sender)
+    reply = build_conversation_reply(incoming, sender=sender)
     log_message("BOT", reply)
     return twiml_message(reply)
 
