@@ -66,7 +66,7 @@ def detect_intent(text: str) -> Tuple[str, Dict]:
         return "features", info
 
     # Compatibility / business-specific questions
-    if re.search(r"\b(can|could|does|do|will)\b.*\b(work|be used|be suitable|fit|help)\b.*\bfor\b", t) or re.search(r"\bworks for\b|\bsuitable for\b|\buse for\b", t):
+    if re.search(r"\b(can|could|does|do|will)\b.*\b(work|be used|be suitable|fit|help)\b.*\bfor\b", t) or re.search(r"\bwork(?:s)? for\b|\bsuitable for\b|\buse for\b", t):
         for b in BUSINESS_TYPES:
             if re.search(rf"\b{re.escape(b)}s?\b", t):
                 info["business"] = b

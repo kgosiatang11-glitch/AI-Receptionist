@@ -98,7 +98,7 @@ class ReceptionistAppTests(unittest.TestCase):
         )
 
         body = response.data.decode("utf-8")
-        self.assertIn("salons, gyms, restaurants, clinics, hotels", body)
+        self.assertIn("salons, gyms, restaurants, clinics, hotels, and more", body)
 
     def test_openai_failure_returns_a_fallback_reply(self):
         failing_client = type(
