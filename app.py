@@ -13,6 +13,7 @@ from flask import Flask, Response, request
 from openai import OpenAI
 from twilio.rest import Client as TwilioClient
 from twilio.twiml.messaging_response import MessagingResponse
+from voice import create_voice_blueprint, voice_error_twiml
 
 load_dotenv()
 
@@ -39,6 +40,7 @@ BUSINESS_GREETING = os.getenv(
     "Hello and welcome to SmartDesk AI! I'm O'Brien, your AI Receptionist. How can I assist you today?",
 )
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", DEFAULT_TWILIO_NUMBER)
+VOICE_LISTEN_TIMEOUT_SECONDS = int(os.getenv("VOICE_LISTEN_TIMEOUT_SECONDS", "30"))
 
 app = Flask(__name__)
 state_lock = Lock()
@@ -403,6 +405,18 @@ def generate_ai_reply(incoming: str, sender: str | None = None) -> str:
     return reply
 
 
+# Voice receives this existing AI function by dependency injection.  Future
+# transcription can therefore reuse the same prompt, knowledge, history, and
+# OpenAI client as WhatsApp without a separate AI implementation.
+app.register_blueprint(
+    create_voice_blueprint(
+        generate_ai_reply,
+        event_logger=log_message,
+        listen_timeout_seconds=VOICE_LISTEN_TIMEOUT_SECONDS,
+    )
+)
+
+
 @app.route("/")
 def health() -> str:
     return "SmartDesk AI is running"
@@ -412,6 +426,8 @@ def health() -> str:
 def handle_webhook_error(error: Exception) -> Response:
     """Always give Twilio a valid reply instead of leaving a message unanswered."""
     app.logger.exception("Unhandled request error", exc_info=error)
+    if request.path.startswith("/voice"):
+        return voice_error_twiml()
     return twiml_message(
         "Sorry, we could not process that message right now. Please try again shortly."
     )

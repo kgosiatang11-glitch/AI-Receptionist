@@ -57,6 +57,29 @@ class ReceptionistAppTests(unittest.TestCase):
         self.assertEqual(response.mimetype, "application/xml")
         self.assertIn("<Response>", response.data.decode("utf-8"))
 
+    def test_voice_call_is_answered_with_the_required_greeting(self):
+        response = self.client.post(
+            "/voice",
+            data={"CallSid": "CA123", "From": "+26770000010"},
+        )
+        body = response.data.decode("utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/xml")
+        self.assertIn("Hello! Thank you for calling Smart Desk AI. How can I help you today?", body)
+        self.assertIn("<Gather", body)
+        self.assertIn('input="dtmf"', body)
+
+    def test_voice_continuation_returns_valid_twiml(self):
+        response = self.client.post(
+            "/voice/continue",
+            data={"CallSid": "CA123", "Digits": "1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/xml")
+        self.assertIn("Please hold for assistance.", response.data.decode("utf-8"))
+
     def test_openai_failure_returns_a_fallback_reply(self):
         failing_client = type(
             "FailingClient",
