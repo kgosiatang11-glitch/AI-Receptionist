@@ -41,6 +41,8 @@ BUSINESS_GREETING = os.getenv(
 )
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", DEFAULT_TWILIO_NUMBER)
 VOICE_LISTEN_TIMEOUT_SECONDS = int(os.getenv("VOICE_LISTEN_TIMEOUT_SECONDS", "30"))
+VOICE_SPEECH_TIMEOUT_SECONDS = os.getenv("VOICE_SPEECH_TIMEOUT_SECONDS", "auto")
+TWILIO_VOICE_LANGUAGE = os.getenv("TWILIO_VOICE_LANGUAGE", "en-US")
 
 app = Flask(__name__)
 state_lock = Lock()
@@ -413,6 +415,8 @@ app.register_blueprint(
         generate_ai_reply,
         event_logger=log_message,
         listen_timeout_seconds=VOICE_LISTEN_TIMEOUT_SECONDS,
+        speech_timeout_seconds=VOICE_SPEECH_TIMEOUT_SECONDS,
+        voice_language=TWILIO_VOICE_LANGUAGE,
     )
 )
 

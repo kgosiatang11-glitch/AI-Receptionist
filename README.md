@@ -8,8 +8,8 @@ Flask-based receptionist with Twilio WhatsApp and Voice webhook handling, rule-b
 - Escalates to a human when the user asks for a person or manager
 - Uses OpenAI as a fallback for club and padel questions
 - Tracks first-time visitors and counts new 24-hour conversations against a monthly limit
-- Answers incoming Twilio Voice calls with a professional greeting and keeps the call open briefly for the next interaction
-- Keeps Voice isolated in `voice.py`, ready to send future verified speech transcripts through the same AI service used by WhatsApp
+- Answers incoming Twilio Voice calls, transcribes each spoken turn, and reads a shared-AI reply back to the caller
+- Keeps Voice isolated in `voice.py` while reusing the WhatsApp AI service, prompt, history, and OpenAI configuration
 
 ## Setup
 
@@ -43,6 +43,8 @@ BOOKING_URL=https://bluetree.playbypoint.com
 BUSINESS_TIMEZONE=Africa/Gaborone
 STATE_DIR=.
 VOICE_LISTEN_TIMEOUT_SECONDS=30
+VOICE_SPEECH_TIMEOUT_SECONDS=auto
+TWILIO_VOICE_LANGUAGE=en-US
 ```
 
 ## Local Testing
@@ -64,4 +66,4 @@ VOICE_LISTEN_TIMEOUT_SECONDS=30
 - The app now persists bot on/off state across restarts
 - Runtime text files are acceptable for a tiny deployment, but a database is the next upgrade if traffic grows
 - `service_account.json` is currently unused by the Flask flow
-- Voice currently provides the greeting and a short keypad wait only. Speech recognition, AI audio responses, and booking are intentionally deferred; future voice turns will call the existing shared AI service rather than a duplicate implementation.
+- Voice captures caller speech with Twilio `<Gather>`, sends its `SpeechResult` to the existing shared AI service, speaks the reply with `<Say>`, then listens for the next turn. Booking remains deferred.
