@@ -83,12 +83,9 @@ def route_message(text: str) -> Dict[str, Optional[str]]:
 
     if intent == "about":
         about = (
-            "SmartDesk AI works in 5 simple steps:\n"
-            "1. A business tells us about its services.\n"
-            "2. We configure the AI with the business information.\n"
-            "3. We connect it to the business's WhatsApp number.\n"
-            "4. The AI automatically answers customer questions, provides business information, and assists with bookings 24/7.\n"
-            "5. The business saves time and never misses customer enquiries."
+            "An AI receptionist handles customer enquiries around the clock. "
+            "SmartDesk AI configures it for your business so it can answer questions, "
+            "provide business information, assist with bookings, and communicate through WhatsApp or phone calls."
         )
         return {"intent": intent, "response": about, "use_ai": False}
 

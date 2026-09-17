@@ -100,6 +100,28 @@ class ReceptionistAppTests(unittest.TestCase):
         body = response.data.decode("utf-8")
         self.assertIn("salons, gyms, restaurants, clinics, hotels, and more", body)
 
+    def test_ready_to_buy_moves_directly_to_setup_handoff(self):
+        response = self.post_message("I want one for my salon. Let's do it.")
+
+        self.assertIn("Let's get you started", response)
+        self.assertIn("complete the setup", response)
+        self.assertNotIn("Your purchase is confirmed", response)
+
+    def test_price_answer_uses_approved_knowledge_and_next_step(self):
+        response = self.post_message("How much is it?")
+
+        self.assertIn("Please contact sales for pricing plans", response)
+        self.assertIn("get your setup started", response)
+
+    def test_voice_ready_to_buy_uses_the_same_sales_handoff(self):
+        response = self.client.post(
+            "/voice/continue",
+            data={"CallSid": "CA-sales", "From": "+26770000012", "SpeechResult": "I want it"},
+        ).data.decode("utf-8")
+
+        self.assertIn("Let's get you started", response)
+        self.assertIn("complete the setup", response)
+
     def test_openai_failure_returns_a_fallback_reply(self):
         failing_client = type(
             "FailingClient",
@@ -159,11 +181,11 @@ class ReceptionistAppTests(unittest.TestCase):
         self.assertIn("24/7 Automated Customer Support", response)
         self.assertIn("Appointment &amp; Booking Automation", response)
 
-    def test_how_it_works_reply_lists_the_process(self):
+    def test_how_it_works_reply_explains_the_service_and_offers_next_step(self):
         response = self.post_message("How does SmartDesk AI work?")
-        self.assertIn("A business tells us about its services.", response)
-        self.assertIn("We connect it to the business's WhatsApp number.", response)
-        self.assertIn("never misses customer enquiries", response)
+        self.assertIn("An AI receptionist handles customer enquiries", response)
+        self.assertIn("WhatsApp or phone calls", response)
+        self.assertIn("how it could work for your business", response)
 
     def test_human_escalation_path_is_reachable(self):
         self.post_message("Hello there")

@@ -10,6 +10,7 @@ Flask-based O'Brien receptionist with Twilio WhatsApp and Voice channels, one ve
 - Tracks first-time visitors and counts new 24-hour conversations against a monthly limit
 - Answers incoming Twilio Voice calls, transcribes each spoken turn, and reads a shared-AI reply back to the caller
 - Keeps WhatsApp and Voice as channel adapters over the same O'Brien engine
+- Uses the same sales policy across WhatsApp and Voice: explain clearly, recommend relevant value, move genuine interest to setup, and hand off immediately when a human is requested
 
 ## Architecture
 
@@ -27,6 +28,7 @@ WhatsApp /voice channel adapters
 - Existing `BUSINESS_LOCATION` and `BOOKING_URL` environment values are also included in the verified OpenAI context when configured.
 - WhatsApp memory is keyed by its sender number. Voice memory is keyed by `voice:<Twilio CallSid>`, so simultaneous calls cannot share history.
 - If information is absent from the knowledge source, O'Brien says it is unavailable instead of inventing an answer. Booking is never claimed as complete unless a connected system confirms it.
+- Pricing comes only from the verified knowledge source. O'Brien can offer the next setup step, but never claims a purchase, payment, or installation is complete without a connected system confirmation.
 
 ## Setup
 

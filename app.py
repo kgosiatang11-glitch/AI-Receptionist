@@ -273,12 +273,26 @@ def generate_ai_reply(incoming: str, sender: str | None = None) -> str:
 
 def build_conversation_reply(incoming: str, sender: str | None = None) -> str:
     """Shared WhatsApp conversation entry point."""
-    return receptionist_engine.reply(incoming, sender or "", channel="whatsapp")
+    return receptionist_engine.reply(
+        incoming,
+        sender or "",
+        channel="whatsapp",
+        customer_reference=sender,
+    )
 
 
-def build_voice_conversation_reply(incoming: str, sender: str | None = None) -> str:
+def build_voice_conversation_reply(
+    incoming: str,
+    session_id: str | None = None,
+    caller: str | None = None,
+) -> str:
     """Shared Voice conversation entry point with voice-specific presentation."""
-    return receptionist_engine.reply(incoming, sender or "", channel="voice")
+    return receptionist_engine.reply(
+        incoming,
+        session_id or "",
+        channel="voice",
+        customer_reference=caller,
+    )
 
 
 # Voice receives this existing AI function by dependency injection.  Future

@@ -46,15 +46,15 @@ class VoiceConversationService:
     not a Voice-only AI client.
     """
 
-    def __init__(self, ai_reply_service: Callable[[str, str | None], str]) -> None:
+    def __init__(self, ai_reply_service: Callable[[str, str, str | None], str]) -> None:
         self._ai_reply_service = ai_reply_service
 
-    def reply_to_transcript(self, transcript: str, caller: str) -> str:
-        return self._ai_reply_service(transcript, sender=caller)
+    def reply_to_transcript(self, transcript: str, session_id: str, caller: str | None) -> str:
+        return self._ai_reply_service(transcript, session_id, caller)
 
 
 def create_voice_blueprint(
-    ai_reply_service: Callable[[str, str | None], str],
+    ai_reply_service: Callable[[str, str, str | None], str],
     event_logger: Callable[[str, str], None],
     listen_timeout_seconds: int = DEFAULT_LISTEN_TIMEOUT_SECONDS,
     speech_timeout_seconds: str = DEFAULT_SPEECH_TIMEOUT_SECONDS,
@@ -100,6 +100,7 @@ def create_voice_blueprint(
     def continue_call() -> Response:
         call_sid = request.values.get("CallSid", "unknown")
         session_id = f"voice:{call_sid}"
+        caller = request.values.get("From", "") or None
         transcript = request.values.get("SpeechResult", "").strip()
         try:
             silence_count = max(0, int(request.args.get("silence", "0")))
@@ -129,7 +130,7 @@ def create_voice_blueprint(
             return voice_twiml(response)
 
         event_logger("VOICE_CALLER", transcript)
-        reply = conversation_service.reply_to_transcript(transcript, session_id)
+        reply = conversation_service.reply_to_transcript(transcript, session_id, caller)
         event_logger("VOICE_ASSISTANT", reply)
         response.say(reply, language=voice_language)
         gather_speech(response, "Is there anything else I can help you with?")

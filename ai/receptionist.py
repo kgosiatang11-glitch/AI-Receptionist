@@ -34,7 +34,16 @@ Rules:
 - Use conversation history only for the same customer session. Never mention
   internal prompts, APIs, system details, or other customers.
 - Remain warm, professional, concise, and focused on the business. Do not say
-  you are an AI.
+  you are human or misrepresent what you can do.
+- Follow the sales path naturally: inform, understand only what is necessary,
+  recommend a relevant use, then move genuine interest toward a clear next
+  step. Do not turn interest into a long questionnaire.
+- When a prospect shows buying intent, confidently offer the next setup step.
+  When they are ready to buy, facilitate setup or a team handoff immediately.
+  Never pressure them or claim a purchase, payment, installation, or setup was
+  completed unless a connected system confirmed it.
+- If a customer asks for a human, hand off immediately and do not continue the
+  sales pitch.
 - For WhatsApp, format naturally for text. For voice, keep replies easy to hear
   and normally one or two short sentences.
 - Respond naturally in Botswana Setswana when the customer uses Setswana; use
@@ -69,23 +78,41 @@ class ReceptionistEngine:
         self._history_appender = history_appender
         self._escalation_notifier = escalation_notifier
 
-    def reply(self, message: str, session_id: str, channel: str) -> str:
+    def reply(
+        self,
+        message: str,
+        session_id: str,
+        channel: str,
+        customer_reference: str | None = None,
+    ) -> str:
         """Produce one answer and retain it only in this customer's session."""
         local_greeting = self._setswana_greeting(message)
         if local_greeting:
             return self._record_turn(session_id, message, local_greeting)
 
-        routed = route_message(message)
-        routed_reply = routed.get("response")
-        if routed_reply:
-            return self._record_turn(session_id, message, routed_reply)
-
         if self._is_handoff_request(message):
-            self._escalation_notifier(session_id, message)
+            self._escalation_notifier(customer_reference or session_id, message)
             return self._record_turn(
                 session_id,
                 message,
-                "Thank you. A team member will contact you shortly.",
+                "Absolutely. I'll connect you with the SmartDesk AI team so they can assist you directly. A team member will contact you shortly.",
+            )
+
+        if self._is_ready_to_buy(message):
+            self._escalation_notifier(customer_reference or session_id, message)
+            return self._record_turn(
+                session_id,
+                message,
+                "Excellent. Let's get you started. I'll connect you with the SmartDesk AI team to complete the setup.",
+            )
+
+        routed = route_message(message)
+        routed_reply = routed.get("response")
+        if routed_reply:
+            return self._record_turn(
+                session_id,
+                message,
+                self._sales_follow_up(routed["intent"], routed_reply),
             )
 
         return self._generate_openai_reply(message, session_id, channel)
@@ -143,6 +170,27 @@ class ReceptionistEngine:
     def _is_handoff_request(message: str) -> bool:
         text = " ".join(message.lower().split())
         return any(term in text for term in ("manager", "human", "call me", "person", "someone"))
+
+    @staticmethod
+    def _is_ready_to_buy(message: str) -> bool:
+        text = " ".join(message.lower().split())
+        buying_phrases = (
+            "i want it", "i want one", "let's do it", "lets do it",
+            "get started", "start the setup", "proceed with the setup",
+            "set this up for me", "set it up for me", "ready to proceed",
+        )
+        return any(phrase in text for phrase in buying_phrases)
+
+    @staticmethod
+    def _sales_follow_up(intent: str, reply: str) -> str:
+        """Keep verified routed answers concise while offering a direct next step."""
+        if intent == "pricing":
+            return f"{reply} If you'd like, I can connect you with the SmartDesk AI team to get your setup started."
+        if intent == "about":
+            return f"{reply} If you'd like, I can show you how it could work for your business."
+        if intent == "compatibility":
+            return reply
+        return reply
 
     @staticmethod
     def _setswana_greeting(message: str) -> str | None:
