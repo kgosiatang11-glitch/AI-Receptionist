@@ -83,7 +83,7 @@ class ReceptionistAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, "application/xml")
         body = response.data.decode("utf-8")
-        self.assertIn("Thanks for your message.", body)
+        self.assertIn("I don't have that information available", body)
         self.assertIn("Is there anything else I can help you with?", body)
         self.assertIn('input="speech"', body)
 
@@ -122,7 +122,36 @@ class ReceptionistAppTests(unittest.TestCase):
         with patch.object(self.app_module, "client", failing_client):
             response = self.post_message("Please explain your integrations.")
 
-        self.assertIn("temporary issue", response)
+        self.assertIn("I don't have that information available", response)
+
+    def test_voice_and_whatsapp_use_the_same_hours_knowledge(self):
+        whatsapp_reply = self.post_message("What are your opening hours?")
+        voice_reply = self.client.post(
+            "/voice/continue",
+            data={"CallSid": "CA-hours", "SpeechResult": "What time do you close?"},
+        ).data.decode("utf-8")
+
+        self.assertIn("We are available 24 hours a day, 7 days a week.", whatsapp_reply)
+        self.assertIn("We are available 24 hours a day, 7 days a week.", voice_reply)
+
+    def test_voice_sessions_are_isolated_by_call_sid(self):
+        self.client.post(
+            "/voice/continue",
+            data={"CallSid": "CA-one", "From": "+26770000010", "SpeechResult": "Hello"},
+        )
+        self.client.post(
+            "/voice/continue",
+            data={"CallSid": "CA-two", "From": "+26770000010", "SpeechResult": "Hello"},
+        )
+
+        history = (self.state_dir / "conversation_history.json").read_text(encoding="utf-8")
+        self.assertIn("voice:CA-one", history)
+        self.assertIn("voice:CA-two", history)
+        self.assertNotIn('"+26770000010"', history)
+
+    def test_unknown_information_is_not_invented(self):
+        response = self.post_message("Do you have a branch in Francistown?")
+        self.assertIn("I don't have that information available", response)
 
     def test_services_request_lists_smartdesk_services(self):
         response = self.post_message("What services do you offer?")
@@ -222,6 +251,7 @@ class ReceptionistAppTests(unittest.TestCase):
             self.app_module.generate_ai_reply("Yes", sender="whatsapp:+26770000004")
 
         messages = fake_completions.calls[1]["messages"]
+        self.assertTrue(any("BUSINESS KNOWLEDGE (verified)" in msg["content"] for msg in messages if msg["role"] == "user"))
         self.assertTrue(any(msg["role"] == "user" and "Can you help me with bookings?" in msg["content"] for msg in messages))
         self.assertTrue(any(msg["role"] == "assistant" for msg in messages))
 

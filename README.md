@@ -1,15 +1,32 @@
 # Smart Desk AI Receptionist
 
-Flask-based receptionist with Twilio WhatsApp and Voice webhook handling, rule-based answers, human escalation, and a shared OpenAI fallback.
+Flask-based O'Brien receptionist with Twilio WhatsApp and Voice channels, one verified business-knowledge source, session memory, and OpenAI language generation.
 
 ## What It Does
 - Receives inbound WhatsApp messages through a Twilio webhook
 - Replies instantly for common intents like pricing, hours, bookings, location, and payment
 - Escalates to a human when the user asks for a person or manager
-- Uses OpenAI as a fallback for club and padel questions
+- Gives OpenAI the verified business knowledge and O'Brien rules for natural-language answers without making OpenAI the source of truth
 - Tracks first-time visitors and counts new 24-hour conversations against a monthly limit
 - Answers incoming Twilio Voice calls, transcribes each spoken turn, and reads a shared-AI reply back to the caller
-- Keeps Voice isolated in `voice.py` while reusing the WhatsApp AI service, prompt, history, and OpenAI configuration
+- Keeps WhatsApp and Voice as channel adapters over the same O'Brien engine
+
+## Architecture
+
+```text
+config/smartdesk_config.json (verified facts)
+        ↓
+knowledge/business_knowledge.py
+        ↓
+ai/receptionist.py (O'Brien rules + OpenAI + per-session memory)
+        ↓
+WhatsApp /voice channel adapters
+```
+
+- Edit `config/smartdesk_config.json` to change verified services, pricing, hours, greeting, and features.
+- Existing `BUSINESS_LOCATION` and `BOOKING_URL` environment values are also included in the verified OpenAI context when configured.
+- WhatsApp memory is keyed by its sender number. Voice memory is keyed by `voice:<Twilio CallSid>`, so simultaneous calls cannot share history.
+- If information is absent from the knowledge source, O'Brien says it is unavailable instead of inventing an answer. Booking is never claimed as complete unless a connected system confirms it.
 
 ## Setup
 
@@ -45,6 +62,7 @@ STATE_DIR=.
 VOICE_LISTEN_TIMEOUT_SECONDS=30
 VOICE_SPEECH_TIMEOUT_SECONDS=auto
 TWILIO_VOICE_LANGUAGE=en-US
+VOICE_MAX_SILENCE_REPROMPTS=2
 ```
 
 ## Local Testing
@@ -54,6 +72,8 @@ TWILIO_VOICE_LANGUAGE=en-US
 - Send messages from WhatsApp and verify the replies in `logs.txt`
 - Point the Twilio Voice number's **A call comes in** webhook to `https://your-domain/voice` using `POST`
 - Call the number and verify that it reads: "Hello! Thank you for calling Smart Desk AI. How can I help you today?"
+- Ask the same verified-fact question through both channels, such as "What time do you close?". The facts should match even when the wording differs.
+- For a Voice test, wait briefly after speaking so Twilio can finish the transcription.
 
 ## Runtime Files
 - `usage.txt`: monthly counted conversations
@@ -66,4 +86,4 @@ TWILIO_VOICE_LANGUAGE=en-US
 - The app now persists bot on/off state across restarts
 - Runtime text files are acceptable for a tiny deployment, but a database is the next upgrade if traffic grows
 - `service_account.json` is currently unused by the Flask flow
-- Voice captures caller speech with Twilio `<Gather>`, sends its `SpeechResult` to the existing shared AI service, speaks the reply with `<Say>`, then listens for the next turn. Booking remains deferred.
+- Voice captures caller speech with Twilio `<Gather>`, sends its `SpeechResult` to O'Brien, speaks the reply with `<Say>`, then listens for the next turn. After the configured silence retries, it ends the call politely. Booking remains deferred.

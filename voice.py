@@ -19,6 +19,7 @@ VOICE_GREETING = "Hello! Thank you for calling Smart Desk AI. How can I help you
 DEFAULT_LISTEN_TIMEOUT_SECONDS = 30
 DEFAULT_SPEECH_TIMEOUT_SECONDS = "auto"
 DEFAULT_VOICE_LANGUAGE = "en-US"
+DEFAULT_MAX_SILENCE_REPROMPTS = 2
 
 
 def voice_twiml(response: VoiceResponse | None = None) -> Response:
@@ -58,21 +59,23 @@ def create_voice_blueprint(
     listen_timeout_seconds: int = DEFAULT_LISTEN_TIMEOUT_SECONDS,
     speech_timeout_seconds: str = DEFAULT_SPEECH_TIMEOUT_SECONDS,
     voice_language: str = DEFAULT_VOICE_LANGUAGE,
+    max_silence_reprompts: int = DEFAULT_MAX_SILENCE_REPROMPTS,
 ) -> Blueprint:
     """Create the Voice webhook module using the application's shared services."""
     voice = Blueprint("voice", __name__)
     conversation_service = VoiceConversationService(ai_reply_service)
     voice.conversation_service = conversation_service  # type: ignore[attr-defined]
     timeout = max(1, min(listen_timeout_seconds, 60))
+    max_reprompts = max(0, max_silence_reprompts)
 
-    def gather_speech(response: VoiceResponse, prompt: str) -> None:
+    def gather_speech(response: VoiceResponse, prompt: str, silence_count: int = 0) -> None:
         """Ask for one spoken turn and send Twilio's transcript to the callback."""
         gather = response.gather(
             input="speech",
             timeout=timeout,
             speech_timeout=speech_timeout_seconds,
             language=voice_language,
-            action="/voice/continue",
+            action=f"/voice/continue?silence={silence_count}",
             method="POST",
             action_on_empty_result=True,
         )
@@ -96,8 +99,12 @@ def create_voice_blueprint(
     @voice.route("/voice/continue", methods=["POST"])
     def continue_call() -> Response:
         call_sid = request.values.get("CallSid", "unknown")
-        caller = request.values.get("From", "") or f"voice:{call_sid}"
+        session_id = f"voice:{call_sid}"
         transcript = request.values.get("SpeechResult", "").strip()
+        try:
+            silence_count = max(0, int(request.args.get("silence", "0")))
+        except ValueError:
+            silence_count = 0
         logging.getLogger(__name__).info(
             "Voice interaction received: call_sid=%s transcript_present=%s",
             call_sid,
@@ -107,14 +114,22 @@ def create_voice_blueprint(
 
         response = VoiceResponse()
         if not transcript:
+            if silence_count >= max_reprompts:
+                response.say(
+                    "I still can't hear you. Please call again when you're ready. Goodbye.",
+                    language=voice_language,
+                )
+                response.hangup()
+                return voice_twiml(response)
             gather_speech(
                 response,
                 "I'm sorry, I didn't catch that. Please say that again.",
+                silence_count=silence_count + 1,
             )
             return voice_twiml(response)
 
         event_logger("VOICE_CALLER", transcript)
-        reply = conversation_service.reply_to_transcript(transcript, caller)
+        reply = conversation_service.reply_to_transcript(transcript, session_id)
         event_logger("VOICE_ASSISTANT", reply)
         response.say(reply, language=voice_language)
         gather_speech(response, "Is there anything else I can help you with?")

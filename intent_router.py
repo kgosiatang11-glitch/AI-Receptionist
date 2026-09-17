@@ -1,17 +1,9 @@
 from __future__ import annotations
 
-import json
 import re
-from pathlib import Path
 from typing import Optional, Tuple, Dict
 
-CONFIG_PATH = Path(__file__).parent / "config" / "smartdesk_config.json"
-
-try:
-    with CONFIG_PATH.open("r", encoding="utf-8") as f:
-        CONFIG = json.load(f)
-except Exception:
-    CONFIG = {}
+from knowledge.business_knowledge import get_business_knowledge
 
 BUSINESS_TYPES = [
     "salon",
@@ -83,10 +75,11 @@ def route_message(text: str) -> Dict[str, Optional[str]]:
     If 'response' is None and 'use_ai' is True, caller should invoke OpenAI.
     """
     intent, info = detect_intent(text)
+    knowledge = get_business_knowledge()
 
     # Greetings
     if intent == "greeting":
-        return {"intent": intent, "response": CONFIG.get("greeting"), "use_ai": False}
+        return {"intent": intent, "response": knowledge.get("greeting"), "use_ai": False}
 
     if intent == "about":
         about = (
@@ -100,7 +93,7 @@ def route_message(text: str) -> Dict[str, Optional[str]]:
         return {"intent": intent, "response": about, "use_ai": False}
 
     if intent == "features":
-        features = CONFIG.get("features", [])
+        features = knowledge.get("features", [])
         features_text = "\n".join(f"- {f}" for f in features)
         return {"intent": intent, "response": features_text, "use_ai": False}
 
@@ -108,10 +101,10 @@ def route_message(text: str) -> Dict[str, Optional[str]]:
         return {"intent": intent, "response": "Thank you. A team member will contact you shortly.", "use_ai": False}
 
     if intent == "pricing":
-        return {"intent": intent, "response": CONFIG.get("pricing"), "use_ai": False}
+        return {"intent": intent, "response": knowledge.get("pricing"), "use_ai": False}
 
     if intent == "hours":
-        return {"intent": intent, "response": CONFIG.get("business_hours"), "use_ai": False}
+        return {"intent": intent, "response": knowledge.get("business_hours"), "use_ai": False}
 
     if intent == "compatibility":
         business = info.get("business")

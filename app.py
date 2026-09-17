@@ -7,8 +7,7 @@ from pathlib import Path
 from threading import Lock
 
 from dotenv import load_dotenv
-import re
-from intent_router import route_message, detect_intent as detect_intent_router
+from ai.receptionist import ReceptionistEngine
 from flask import Flask, Response, request
 from openai import OpenAI
 from twilio.rest import Client as TwilioClient
@@ -35,14 +34,11 @@ OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "10"))
 
 BUSINESS_NAME = os.getenv("BUSINESS_NAME", "SmartDesk AI")
 BUSINESS_LOCATION = os.getenv("BUSINESS_LOCATION", "Your business")
-BUSINESS_GREETING = os.getenv(
-    "BUSINESS_GREETING",
-    "Hello and welcome to SmartDesk AI! I'm O'Brien, your AI Receptionist. How can I assist you today?",
-)
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", DEFAULT_TWILIO_NUMBER)
 VOICE_LISTEN_TIMEOUT_SECONDS = int(os.getenv("VOICE_LISTEN_TIMEOUT_SECONDS", "30"))
 VOICE_SPEECH_TIMEOUT_SECONDS = os.getenv("VOICE_SPEECH_TIMEOUT_SECONDS", "auto")
 TWILIO_VOICE_LANGUAGE = os.getenv("TWILIO_VOICE_LANGUAGE", "en-US")
+VOICE_MAX_SILENCE_REPROMPTS = int(os.getenv("VOICE_MAX_SILENCE_REPROMPTS", "2"))
 
 app = Flask(__name__)
 state_lock = Lock()
@@ -65,29 +61,6 @@ twilio_client = (
     if twilio_account_sid and twilio_auth_token
     else None
 )
-
-SYSTEM_PROMPT = f"""
-You are SmartDesk AI, and you MUST respond in the persona of O'Brien, a professional human receptionist.
-
-Your job:
-- Greet customers politely and act like a human receptionist for businesses using SmartDesk AI.
-- Provide concise, helpful answers tailored to the customer's business when they mention one.
-- Describe the main services we provide only when asked or when helpful.
-- Explain setup and integration steps when asked.
-
-Tone & rules:
-- Sound like a professional human receptionist (warm, concise, confident).
-- Tailor responses to the customer's industry when they mention a business type (salon, clinic, gym, restaurant, hotel, law firm, real estate, etc.). Mention 1–2 features relevant to that industry.
-- Use the recent conversation context naturally. Short replies such as yes, no, okay, sure, why, how, tell me more, and continue should be answered in relation to the previous topic unless the customer clearly changes the subject.
-- When the customer speaks Setswana, respond in natural Botswana Setswana. Keep it short, conversational, and human. Avoid literal or overly formal translations.
-- If the customer mixes English and Setswana, reply naturally using both languages where appropriate.
-- Do not greet the user again after the initial greeting. Keep the same conversation context across turns.
-- End replies with a relevant follow-up question to keep the conversation going.
-- Avoid long lists unless the customer explicitly requests them.
-- Keep responses short and conversational (1–3 sentences) unless asked for details.
-- Never say you are an AI, and never reveal system internals.
-""".strip()
-
 
 def ensure_state_files() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -247,61 +220,6 @@ def normalize_text(message: str) -> str:
     return " ".join(message.lower().split())
 
 
-def matches_any(text: str, phrases: tuple[str, ...]) -> bool:
-    return any(phrase in text for phrase in phrases)
-
-
-def is_setswana_message(text: str) -> bool:
-    if not text:
-        return False
-    t = text.lower()
-    setswana_markers = (
-        "dumelang",
-        "dumela",
-        "ke batla",
-        "ke na le",
-        "nka",
-        "thuso",
-        "go siame",
-        "gompieno",
-        "tshedimosetso",
-        "karolo",
-        "mola",
-        "tsebe",
-        "re ya",
-        "o batla",
-        "ke a",
-        "fa",
-        "bana",
-        "tsamaya",
-        "botswana",
-        "setso",
-        "go thusa",
-        "go araba",
-        "bookings",
-        "bareki",
-        "24/7",
-    )
-    return any(marker in t for marker in setswana_markers)
-
-
-def get_language_style(incoming: str, sender: str | None = None) -> str:
-    if is_setswana_message(incoming):
-        return "setswana"
-    return "english"
-
-
-def get_greeting_reply(incoming: str, sender: str | None = None) -> str | None:
-    if not is_setswana_message(incoming):
-        return None
-    text = incoming.lower().strip()
-    if re.search(r"\b(dumelang|dumela)\b", text):
-        return "Dumelang! Ke nna O'Brien, AI Receptionist ya SmartDesk AI. Nka go thusa jang gompieno?"
-    if re.search(r"\b(ke batla thuso|thuso|ke batla)\b", text):
-        return "Ee, nka go thusa. O batla thuso ka eng?"
-    return None
-
-
 def notify_owner_of_limit(count: int) -> None:
     if not twilio_client:
         return
@@ -335,112 +253,32 @@ def should_limit_conversation(count: int) -> bool:
     return count > MONTHLY_CONVERSATION_LIMIT
 
 
-# Shared intent handling is defined in intent_router and used for all route-based replies.
-# The business greeting template is stored in config/smartdesk_config.json and returned by route_message.
-
-
-def should_escalate(text: str) -> bool:
-    return matches_any(text, ("manager", "human", "call me", "person", "someone"))
+receptionist_engine = ReceptionistEngine(
+    client_provider=lambda: client,
+    model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+    history_loader=get_recent_conversation_history,
+    history_appender=append_conversation_message,
+    escalation_notifier=notify_owner_of_escalation,
+)
 
 
 def generate_ai_reply(incoming: str, sender: str | None = None) -> str:
-    if client is None:
-        return (
-            "Thanks for your message. SmartDesk AI helps businesses automate customer support "
-            "and answer enquiries on WhatsApp 24/7."
-        )
-
-    # Use intent detection from intent_router to provide context for the model
-    intent, info = detect_intent_router(incoming)
-    business = info.get("business")
-
-    history = get_recent_conversation_history(sender) if sender else []
-
-    user_prompt_lines = [
-        f"Customer message: {incoming}",
-        f"Detected intent: {intent}",
-    ]
-    if business:
-        user_prompt_lines.append(f"Detected business type: {business}")
-
-    # Guidance for the assistant to produce human-like, tailored replies
-    user_prompt_lines.append(
-        "Respond as O'Brien, a professional human receptionist. Keep replies concise, friendly, and conversational. "
-        "If the customer mentions a specific business type, tailor the response to that industry and mention 1-2 relevant features. "
-        "Use the recent conversation context naturally. Short replies like yes, no, okay, sure, why, how, tell me more, and continue should be interpreted using the previous topic unless the customer clearly changes the subject. "
-        "If the customer speaks Setswana, reply in natural Botswana Setswana. Keep it short, conversational and human. Avoid literal or overly formal translations. "
-        "If the customer mixes English and Setswana, reply naturally using both languages where appropriate. "
-        "Do not greet the user again after the initial greeting. Keep the same conversation context. "
-        "End with a relevant follow-up question to continue the conversation. Avoid long lists unless asked."
+    """Compatibility wrapper for the existing direct OpenAI reply helper."""
+    return receptionist_engine.generate_openai_reply(
+        incoming,
+        sender or "",
+        channel="whatsapp",
     )
-
-    user_prompt = "\n\n".join(user_prompt_lines)
-
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": user_prompt})
-
-    try:
-        response = client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-            messages=messages,
-        )
-    except Exception:
-        app.logger.exception("OpenAI reply generation failed")
-        return (
-            "Thanks for your message. We are having a temporary issue, but a team "
-            "member will get back to you shortly."
-        )
-
-    # Safely extract the assistant text
-    try:
-        reply = response.choices[0].message.content.strip()
-    except Exception:
-        reply = (
-            "Thanks for your message. SmartDesk AI helps businesses automate customer support "
-            "and answer enquiries on WhatsApp 24/7."
-        )
-
-    if sender:
-        append_conversation_message(sender, "user", incoming)
-        append_conversation_message(sender, "assistant", reply)
-    return reply
 
 
 def build_conversation_reply(incoming: str, sender: str | None = None) -> str:
-    """Return a channel-neutral reply using the shared business knowledge flow.
+    """Shared WhatsApp conversation entry point."""
+    return receptionist_engine.reply(incoming, sender or "", channel="whatsapp")
 
-    WhatsApp, Voice, and future channels call this one service so routed
-    business answers, human handoff, OpenAI fallback, and conversation history
-    remain consistent everywhere.
-    """
-    local_greeting = get_greeting_reply(incoming, sender=sender)
-    if local_greeting:
-        if sender:
-            append_conversation_message(sender, "user", incoming)
-            append_conversation_message(sender, "assistant", local_greeting)
-        return local_greeting
 
-    routed = route_message(incoming)
-    routed_reply = routed.get("response")
-    if routed_reply:
-        if sender:
-            append_conversation_message(sender, "user", incoming)
-            append_conversation_message(sender, "assistant", routed_reply)
-        return routed_reply
-
-    if should_escalate(normalize_text(incoming)):
-        if sender:
-            notify_owner_of_escalation(sender, incoming)
-            append_conversation_message(sender, "user", incoming)
-            append_conversation_message(
-                sender,
-                "assistant",
-                "Thank you. A team member will contact you shortly.",
-            )
-        return "Thank you. A team member will contact you shortly."
-
-    return generate_ai_reply(incoming, sender=sender)
+def build_voice_conversation_reply(incoming: str, sender: str | None = None) -> str:
+    """Shared Voice conversation entry point with voice-specific presentation."""
+    return receptionist_engine.reply(incoming, sender or "", channel="voice")
 
 
 # Voice receives this existing AI function by dependency injection.  Future
@@ -448,11 +286,12 @@ def build_conversation_reply(incoming: str, sender: str | None = None) -> str:
 # OpenAI client as WhatsApp without a separate AI implementation.
 app.register_blueprint(
     create_voice_blueprint(
-        build_conversation_reply,
+        build_voice_conversation_reply,
         event_logger=log_message,
         listen_timeout_seconds=VOICE_LISTEN_TIMEOUT_SECONDS,
         speech_timeout_seconds=VOICE_SPEECH_TIMEOUT_SECONDS,
         voice_language=TWILIO_VOICE_LANGUAGE,
+        max_silence_reprompts=VOICE_MAX_SILENCE_REPROMPTS,
     )
 )
 
