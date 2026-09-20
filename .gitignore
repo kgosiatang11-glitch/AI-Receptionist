@@ -8,3 +8,7 @@ users.txt
 usage.txt
 bot_state.txt
 *.pyc
+conversation_history.json
+frontend/node_modules/
+frontend/dist/
+frontend/.env

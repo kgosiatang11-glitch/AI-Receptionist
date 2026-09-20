@@ -28,7 +28,9 @@ BOT_STATE_FILE = STATE_DIR / "bot_state.txt"
 CONVERSATION_HISTORY_FILE = STATE_DIR / "conversation_history.json"
 MAX_CONVERSATION_HISTORY = 20
 
-OWNER = os.getenv("OWNER_WHATSAPP", "whatsapp:+26771298601")
+# No default: a hard-coded number in a public repo is a leak, and a
+# platform-wide owner is wrong once there is more than one tenant.
+OWNER = os.getenv("OWNER_WHATSAPP", "")
 MONTHLY_CONVERSATION_LIMIT = int(os.getenv("MONTHLY_CONVERSATION_LIMIT", "500"))
 OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "10"))
 
