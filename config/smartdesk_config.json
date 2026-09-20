@@ -1,0 +1,18 @@
+{
+  "business_name": "SmartDesk AI",
+  "greeting": "Hello and welcome to SmartDesk AI! I'm O'Brien, your AI Receptionist. How can I assist you today?",
+  "features": [
+    "AI WhatsApp Receptionists",
+    "24/7 Automated Customer Support",
+    "Appointment & Booking Automation",
+    "Customer FAQs",
+    "Lead capture",
+    "Business information",
+    "Multi-language support",
+    "Human handoff",
+    "Custom business knowledge"
+  ],
+  "pricing": "Please contact sales for pricing plans tailored to your business size and needs.",
+  "business_hours": "We are available 24 hours a day, 7 days a week.",
+  "services_short": "SmartDesk AI provides automated WhatsApp reception, booking automation, FAQs, and business integrations."
+}
