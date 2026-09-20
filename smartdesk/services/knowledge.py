@@ -118,20 +118,36 @@ def knowledge_context(tenant_id: str) -> str:
 
 
 def seed_sections(tenant: Tenant, content: dict | None = None) -> None:
-    """Create empty knowledge sections for a tenant.
+    """Create empty knowledge sections for a tenant, or backfill blank ones.
 
-    Sections are created blank rather than pre-filled: inventing business facts
-    is exactly what the receptionist is forbidden to do.
+    Sections a business has never touched are created blank rather than
+    pre-filled: inventing business facts is exactly what the receptionist is
+    forbidden to do. But a section that is still genuinely blank -- created
+    before this tenant's own spec included content for it (e.g. during an
+    earlier partial seed run) -- IS backfilled from that spec on a later
+    call. This never overwrites a section a human has actually written
+    content into; it only fills in what would otherwise stay silently blank
+    forever, since the original "create if missing" logic never revisits a
+    row that already exists.
     """
     content = content or {}
     existing = {
-        d.section
+        d.section: d
         for d in KnowledgeDocument.query.filter_by(tenant_id=tenant.id).all()
     }
     for section in KNOWLEDGE_SECTIONS:
-        if section in existing:
-            continue
         payload = content.get(section) or {}
+        document = existing.get(section)
+
+        if document is not None:
+            is_blank = not document.body and not document.data
+            has_spec_content = bool(payload.get("body") or payload.get("data"))
+            if is_blank and has_spec_content:
+                document.body = payload.get("body")
+                document.data = payload.get("data") or {}
+                document.is_published = True
+            continue
+
         db.session.add(
             KnowledgeDocument(
                 tenant_id=tenant.id,

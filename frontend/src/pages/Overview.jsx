@@ -30,7 +30,11 @@ export function LoginPage() {
     });
     // Deliberately generic: the message must not reveal whether the email
     // exists on the platform.
-    if (authError) setError("Those sign-in details were not accepted.");
+    if (authError) {
+  console.error("Supabase login error:", authError);
+  setError(authError.message);
+    }
+
     setBusy(false);
   }
 
