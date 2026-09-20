@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from ai.persona import LEGACY_SMARTDESK_PERSONA, TenantPersona
 from intent_router import detect_intent, route_message
 from knowledge.business_knowledge import business_knowledge_context
 
@@ -14,13 +15,19 @@ ConversationHistoryLoader = Callable[[str], list[dict[str, str]]]
 ConversationAppender = Callable[[str, str, str], None]
 EscalationNotifier = Callable[[str, str], None]
 OpenAIClientProvider = Callable[[], Any | None]
+PersonaProvider = Callable[[], TenantPersona]
+KnowledgeProvider = Callable[[], str]
+#: Returns a reply if this message was booking-related, else None to let the
+#: normal canned-reply / OpenAI path handle it.
+BookingHandler = Callable[[str, str], str | None]
 
 
 OBRIEN_SYSTEM_RULES = """
-You are O'Brien, the professional AI receptionist for the configured business.
+You are a professional AI receptionist answering on behalf of one specific
+business.
 
-You receive verified BUSINESS KNOWLEDGE supplied by SmartDesk AI. That knowledge
-is the only source of truth for business facts.
+You receive verified BUSINESS KNOWLEDGE for that business. That knowledge is
+the only source of truth for business facts.
 
 Rules:
 - Only state business facts that are present in BUSINESS KNOWLEDGE or the
@@ -71,12 +78,26 @@ class ReceptionistEngine:
         history_loader: ConversationHistoryLoader,
         history_appender: ConversationAppender,
         escalation_notifier: EscalationNotifier,
+        persona_provider: PersonaProvider | None = None,
+        knowledge_provider: KnowledgeProvider | None = None,
+        booking_handler: BookingHandler | None = None,
     ) -> None:
         self._client_provider = client_provider
         self._model = model
         self._history_loader = history_loader
         self._history_appender = history_appender
         self._escalation_notifier = escalation_notifier
+        # Default to the original SmartDesk persona and the JSON knowledge
+        # file so that existing single-tenant callers are unaffected.
+        self._persona_provider = persona_provider or (lambda: LEGACY_SMARTDESK_PERSONA)
+        self._knowledge_provider = knowledge_provider or business_knowledge_context
+        # None by default: existing single-tenant deployments and any test
+        # that constructs the engine directly get exactly the old behaviour.
+        self._booking_handler = booking_handler
+
+    @property
+    def persona(self) -> TenantPersona:
+        return self._persona_provider()
 
     def reply(
         self,
@@ -86,33 +107,45 @@ class ReceptionistEngine:
         customer_reference: str | None = None,
     ) -> str:
         """Produce one answer and retain it only in this customer's session."""
-        local_greeting = self._setswana_greeting(message)
+        persona = self.persona
+        local_greeting = self._setswana_greeting(message, persona)
         if local_greeting:
             return self._record_turn(session_id, message, local_greeting)
 
-        if self._is_handoff_request(message):
+        if persona.handoff_enabled and self._is_handoff_request(message):
             self._escalation_notifier(customer_reference or session_id, message)
             return self._record_turn(
-                session_id,
-                message,
-                "Absolutely. I'll connect you with the SmartDesk AI team so they can assist you directly. A team member will contact you shortly.",
+                session_id, message, persona.resolved_handoff_message()
             )
 
-        if self._is_ready_to_buy(message):
+        # Buying-intent handling belongs to businesses that actually sell a
+        # setup (i.e. SmartDesk itself). A padel club or salon must not route
+        # "let's do it" to a sales escalation.
+        if persona.sales_mode_enabled and self._is_ready_to_buy(message):
             self._escalation_notifier(customer_reference or session_id, message)
             return self._record_turn(
-                session_id,
-                message,
-                "Excellent. Let's get you started. I'll connect you with the SmartDesk AI team to complete the setup.",
+                session_id, message, persona.resolved_sales_handoff_message()
             )
 
-        routed = route_message(message)
+        # Booking is checked before the canned deterministic replies: a
+        # message can be a greeting AND a booking request at once ("Hi, can
+        # I book Saturday at 6pm?"), and the canned greeting reply would
+        # otherwise short-circuit before booking ever got a chance. The
+        # handler itself decides relevance -- it returns None for anything
+        # not booking-related, in which case we fall through to the normal
+        # canned-reply / AI path exactly as before.
+        if self._booking_handler is not None:
+            booking_reply = self._booking_handler(message, session_id)
+            if booking_reply is not None:
+                return self._record_turn(session_id, message, booking_reply)
+
+        routed = route_message(message, persona=persona)
         routed_reply = routed.get("response")
         if routed_reply:
             return self._record_turn(
                 session_id,
                 message,
-                self._sales_follow_up(routed["intent"], routed_reply),
+                self._sales_follow_up(routed["intent"], routed_reply, persona),
             )
 
         return self._generate_openai_reply(message, session_id, channel)
@@ -139,14 +172,18 @@ class ReceptionistEngine:
         )
         user_prompt = "\n\n".join(
             [
-                f"BUSINESS KNOWLEDGE (verified):\n{business_knowledge_context()}",
+                f"BUSINESS KNOWLEDGE (verified):\n{self._knowledge_provider()}",
                 f"Customer message: {message}",
                 f"Detected intent: {intent}",
                 f"Detected business type: {info.get('business', 'not specified')}",
                 channel_style,
             ]
         )
-        messages = [{"role": "system", "content": OBRIEN_SYSTEM_RULES}]
+        system_prompt = OBRIEN_SYSTEM_RULES
+        suffix = self.persona.system_rules_suffix()
+        if suffix:
+            system_prompt = f"{system_prompt}\n\n{suffix}"
+        messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history)
         messages.append({"role": "user", "content": user_prompt})
 
@@ -182,23 +219,30 @@ class ReceptionistEngine:
         return any(phrase in text for phrase in buying_phrases)
 
     @staticmethod
-    def _sales_follow_up(intent: str, reply: str) -> str:
-        """Keep verified routed answers concise while offering a direct next step."""
+    def _sales_follow_up(intent: str, reply: str, persona: TenantPersona) -> str:
+        """Keep verified routed answers concise while offering a direct next step.
+
+        Only applied when the tenant actually sells something. Other tenants
+        get the verified answer with no sales tail appended.
+        """
+        if not persona.sales_mode_enabled:
+            return reply
         if intent == "pricing":
-            return f"{reply} If you'd like, I can connect you with the SmartDesk AI team to get your setup started."
+            return (
+                f"{reply} If you'd like, I can connect you with "
+                f"{persona.team_reference} to get your setup started."
+            )
         if intent == "about":
             return f"{reply} If you'd like, I can show you how it could work for your business."
-        if intent == "compatibility":
-            return reply
         return reply
 
     @staticmethod
-    def _setswana_greeting(message: str) -> str | None:
+    def _setswana_greeting(message: str, persona: TenantPersona) -> str | None:
         if not _is_setswana_message(message):
             return None
         text = message.lower().strip()
         if "dumela" in text:
-            return "Dumelang! Ke nna O'Brien, AI Receptionist ya SmartDesk AI. Nka go thusa jang gompieno?"
+            return persona.resolved_setswana_greeting()
         if any(phrase in text for phrase in ("ke batla thuso", "thuso", "ke batla")):
             return "Ee, nka go thusa. O batla thuso ka eng?"
         return None
