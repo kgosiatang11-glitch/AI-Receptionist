@@ -267,8 +267,109 @@ export function ReceptionistPage() {
 
 /* ------------------------------------------------------------ channels */
 
+const E164_PATTERN = /^\+[1-9]\d{6,14}$/;
+
+/* Mirrors the backend's own normalize_address (smartdesk/tenancy.py): strip
+ * a channel prefix like "whatsapp:", drop anything but digits and "+", and
+ * require a leading "+". Client-side validation is a courtesy only -- the
+ * backend re-validates and is the actual authority. */
+function normalizeAddress(raw) {
+  let value = (raw || "").trim();
+  if (value.includes(":")) value = value.split(":").slice(1).join(":");
+  value = value.replace(/[^\d+]/g, "");
+  if (value && !value.startsWith("+")) value = `+${value}`;
+  return value;
+}
+
+function ConnectChannelForm({ kind, onConnected }) {
+  const { call, can } = useSession();
+  const [address, setAddress] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  const label = kind === "voice" ? "Voice" : "WhatsApp";
+
+  async function submit(event) {
+    event.preventDefault();
+    setError(null);
+
+    const normalized = normalizeAddress(address);
+    if (!E164_PATTERN.test(normalized)) {
+      setError("Enter a valid number in international format, e.g. +26771234567.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await call("/channels", {
+        method: "POST",
+        body: { kind, address: normalized, display_name: displayName || undefined },
+      });
+      setAddress("");
+      setDisplayName("");
+      onConnected();
+    } catch (err) {
+      // Surfaces the backend's own message verbatim -- e.g. 409 when the
+      // number is already registered to a tenant (possibly this one).
+      setError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!can("owner")) {
+    return (
+      <Card title={`Connect ${label} Number`}>
+        <EmptyState
+          title="Owner access required"
+          description={`Only a business owner or SmartDesk administrator can connect a ${label} number.`}
+        />
+      </Card>
+    );
+  }
+
+  return (
+    <Card title={`Connect ${label} Number`}>
+      <form onSubmit={submit}>
+        <div className="sd-field">
+          <label className="sd-label">
+            {kind === "voice" ? "Voice number" : "WhatsApp number"}
+          </label>
+          <input
+            className="sd-input"
+            placeholder="+26771234567"
+            value={address}
+            disabled={submitting}
+            onChange={(e) => setAddress(e.target.value)}
+          />
+          <p className="sd-hint">
+            International format, e.g. +267 for Botswana. This is the number
+            customers will {kind === "voice" ? "call" : "message"} — connect
+            whatever production or local test number is ready now.
+          </p>
+        </div>
+        <div className="sd-field">
+          <label className="sd-label">Display name (optional)</label>
+          <input
+            className="sd-input"
+            placeholder={`e.g. ${label} — main line`}
+            value={displayName}
+            disabled={submitting}
+            onChange={(e) => setDisplayName(e.target.value)}
+          />
+        </div>
+        <ErrorNotice message={error} />
+        <button className="sd-btn" disabled={submitting || !address.trim()}>
+          {submitting ? "Connecting…" : `Connect ${label} Number`}
+        </button>
+      </form>
+    </Card>
+  );
+}
+
 function ChannelPage({ kind, title, subtitle }) {
-  const { data, loading, error } = useApi(`/channels/${kind}`, [kind]);
+  const { data, loading, error, refresh } = useApi(`/channels/${kind}`, [kind]);
   const overview = useApi("/overview");
 
   if (loading) return <Loading />;
@@ -281,69 +382,70 @@ function ChannelPage({ kind, title, subtitle }) {
       <ErrorNotice message={error} />
 
       {channels.length === 0 ? (
-        <Card>
-          <EmptyState
-            title={`No ${title} number connected`}
-            description="A SmartDesk administrator registers the number that routes inbound traffic to this business."
-          />
-        </Card>
+        <ConnectChannelForm kind={kind} onConnected={refresh} />
       ) : (
-        channels.map((channel) => (
-          <Card
-            key={channel.id}
-            className=""
-            title={title}
-            action={
-              <Badge tone={channel.is_active ? "ok" : ""}>
-                <Dot state={channel.is_active ? "ok" : "off"} />
-                {channel.is_active ? "Connected" : "Inactive"}
-              </Badge>
-            }
-          >
-            <div className="sd-status-row"><span>Number</span><span>{channel.address}</span></div>
-            <div className="sd-status-row"><span>Status</span><span>{channel.is_active ? "Active" : "Inactive"}</span></div>
-            <div className="sd-status-row">
-              <span>{kind === "voice" ? "Calls this month" : "Conversations"}</span>
-              <span>{channel.conversations}</span>
-            </div>
-            {kind === "voice" && (
+        <>
+          {channels.map((channel) => (
+            <Card
+              key={channel.id}
+              className=""
+              title={title}
+              action={
+                <Badge tone={channel.is_active ? "ok" : ""}>
+                  <Dot state={channel.is_active ? "ok" : "off"} />
+                  {channel.is_active ? "Connected" : "Inactive"}
+                </Badge>
+              }
+            >
+              <div className="sd-status-row"><span>Number</span><span>{channel.address}</span></div>
+              <div className="sd-status-row"><span>Status</span><span>{channel.is_active ? "Active" : "Inactive"}</span></div>
               <div className="sd-status-row">
-                <span>Calls today</span>
-                <span>{metrics ? metrics.conversations_today : "—"}</span>
+                <span>{kind === "voice" ? "Calls this month" : "Conversations"}</span>
+                <span>{channel.conversations}</span>
               </div>
-            )}
-            <div className="sd-status-row">
-              <span>Last inbound</span><span>{formatDateTime(channel.last_inbound_at)}</span>
-            </div>
-            <div className="sd-status-row">
-              <span>Provider credentials</span>
-              <span>
-                <Dot state={channel.provider_configured ? "ok" : "warn"} />
-                {channel.provider_configured ? "Configured on server" : "Not configured"}
-              </span>
-            </div>
-            <div className="sd-status-row">
-              <span>Webhook signature validation</span>
-              <span>
-                <Dot state={channel.signature_validation ? "ok" : "warn"} />
-                {channel.signature_validation ? "Enforced" : "Disabled"}
-              </span>
-            </div>
-            <div className="sd-status-row">
-              <span>Human handoff</span><span>Enabled</span>
-            </div>
-            <p className="sd-hint">
-              Credentials are held on the server and are never sent to this
-              dashboard — only whether they are present.
-            </p>
-          </Card>
-        ))
+              {kind === "voice" && (
+                <div className="sd-status-row">
+                  <span>Calls today</span>
+                  <span>{metrics ? metrics.conversations_today : "—"}</span>
+                </div>
+              )}
+              <div className="sd-status-row">
+                <span>Last inbound</span><span>{formatDateTime(channel.last_inbound_at)}</span>
+              </div>
+              <div className="sd-status-row">
+                <span>Provider credentials</span>
+                <span>
+                  <Dot state={channel.provider_configured ? "ok" : "warn"} />
+                  {channel.provider_configured ? "Configured on server" : "Not configured"}
+                </span>
+              </div>
+              <div className="sd-status-row">
+                <span>Webhook signature validation</span>
+                <span>
+                  <Dot state={channel.signature_validation ? "ok" : "warn"} />
+                  {channel.signature_validation ? "Enforced" : "Disabled"}
+                </span>
+              </div>
+              <div className="sd-status-row">
+                <span>Human handoff</span><span>Enabled</span>
+              </div>
+              <p className="sd-hint">
+                Credentials are held on the server and are never sent to this
+                dashboard — only whether they are present.
+              </p>
+            </Card>
+          ))}
+          <div style={{ marginTop: 16 }}>
+            <ConnectChannelForm kind={kind} onConnected={refresh} />
+          </div>
+        </>
       )}
     </>
   );
 }
 
 export const WhatsAppPage = () => (
+
   <ChannelPage kind="whatsapp" title="WhatsApp"
     subtitle="The WhatsApp number customers of this business message." />
 );
