@@ -18,7 +18,7 @@ from ai.receptionist import ReceptionistEngine
 from smartdesk.models import Channel, Conversation, Tenant
 from smartdesk.services import conversations as conversation_service
 from smartdesk.services.booking_engine import handle_booking_message
-from smartdesk.services.knowledge import build_persona, knowledge_context
+from smartdesk.services.knowledge import build_persona, knowledge_context, knowledge_dict
 
 logger = logging.getLogger(__name__)
 
@@ -135,5 +135,6 @@ def build_engine(
         escalation_notifier=escalation_notifier,
         persona_provider=lambda: build_persona(tenant),
         knowledge_provider=lambda: knowledge_context(tenant.id),
+        knowledge_dict_provider=lambda: knowledge_dict(tenant.id),
         booking_handler=booking_handler,
     )

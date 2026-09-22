@@ -8,7 +8,7 @@ from typing import Any
 
 from ai.persona import LEGACY_SMARTDESK_PERSONA, TenantPersona
 from intent_router import detect_intent, route_message
-from knowledge.business_knowledge import business_knowledge_context
+from knowledge.business_knowledge import business_knowledge_context, get_business_knowledge
 
 
 ConversationHistoryLoader = Callable[[str], list[dict[str, str]]]
@@ -17,6 +17,12 @@ EscalationNotifier = Callable[[str, str], None]
 OpenAIClientProvider = Callable[[], Any | None]
 PersonaProvider = Callable[[], TenantPersona]
 KnowledgeProvider = Callable[[], str]
+#: Dict-shaped knowledge for the deterministic canned-reply path in
+#: intent_router.route_message() -- distinct from KnowledgeProvider above,
+#: which returns a JSON string for the OpenAI prompt. Both exist because
+#: route_message() reads specific dict keys (knowledge.get("greeting"),
+#: .get("pricing"), etc.) while the OpenAI prompt just wants prose.
+KnowledgeDictProvider = Callable[[], dict]
 #: Returns a reply if this message was booking-related, else None to let the
 #: normal canned-reply / OpenAI path handle it.
 BookingHandler = Callable[[str, str], str | None]
@@ -80,6 +86,7 @@ class ReceptionistEngine:
         escalation_notifier: EscalationNotifier,
         persona_provider: PersonaProvider | None = None,
         knowledge_provider: KnowledgeProvider | None = None,
+        knowledge_dict_provider: KnowledgeDictProvider | None = None,
         booking_handler: BookingHandler | None = None,
     ) -> None:
         self._client_provider = client_provider
@@ -91,6 +98,11 @@ class ReceptionistEngine:
         # file so that existing single-tenant callers are unaffected.
         self._persona_provider = persona_provider or (lambda: LEGACY_SMARTDESK_PERSONA)
         self._knowledge_provider = knowledge_provider or business_knowledge_context
+        # Same legacy-default pattern as the two providers above: when no
+        # tenant-aware provider is supplied, fall back to exactly what
+        # route_message() already defaulted to internally, so single-tenant
+        # callers see no behaviour change.
+        self._knowledge_dict_provider = knowledge_dict_provider or get_business_knowledge
         # None by default: existing single-tenant deployments and any test
         # that constructs the engine directly get exactly the old behaviour.
         self._booking_handler = booking_handler
@@ -139,7 +151,7 @@ class ReceptionistEngine:
             if booking_reply is not None:
                 return self._record_turn(session_id, message, booking_reply)
 
-        routed = route_message(message, persona=persona)
+        routed = route_message(message, knowledge=self._knowledge_dict_provider(), persona=persona)
         routed_reply = routed.get("response")
         if routed_reply:
             return self._record_turn(
