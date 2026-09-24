@@ -154,6 +154,13 @@ function TenantSwitcher() {
 
 const NAV_GROUPS = [
   {
+    label: "SmartDesk Admin",
+    adminOnly: true,
+    items: [
+      { to: "/admin/tenants", label: "Tenants", icon: "▥" },
+    ],
+  },
+  {
     label: "SmartDesk AI",
     items: [
       { to: "/", label: "Overview", icon: "◈", end: true },
@@ -183,6 +190,11 @@ const NAV_GROUPS = [
 ];
 
 export function Sidebar() {
+  const { user } = useSession();
+  const visibleGroups = NAV_GROUPS.filter(
+    (group) => !group.adminOnly || user?.is_platform_admin
+  );
+
   return (
     <aside className="sd-sidebar">
       <div className="sd-brand">
@@ -193,7 +205,7 @@ export function Sidebar() {
       <TenantSwitcher />
 
       <nav className="sd-nav">
-        {NAV_GROUPS.map((group, index) => (
+        {visibleGroups.map((group, index) => (
           <div key={index}>
             {group.label ? (
               <div className="sd-nav-section">{group.label}</div>

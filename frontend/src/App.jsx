@@ -19,6 +19,22 @@ import {
   VoicePage,
   WhatsAppPage,
 } from "./pages/Config.jsx";
+import { AdminTenantDetailPage, AdminTenantsPage } from "./pages/AdminTenants.jsx";
+
+function RequirePlatformAdmin({ children }) {
+  const { user } = useSession();
+  if (!user?.is_platform_admin) {
+    return (
+      <div className="sd-card">
+        <h2>SmartDesk administrator access required</h2>
+        <p style={{ color: "var(--sd-ink-soft)", fontSize: 13 }}>
+          This section is only available to SmartDesk platform administrators.
+        </p>
+      </div>
+    );
+  }
+  return children;
+}
 
 export default function App() {
   const { session, loading, error, tenants } = useSession();
@@ -65,6 +81,8 @@ export default function App() {
         <div className="sd-content">
           <Routes>
             <Route path="/" element={<OverviewPage />} />
+            <Route path="/admin/tenants" element={<RequirePlatformAdmin><AdminTenantsPage /></RequirePlatformAdmin>} />
+            <Route path="/admin/tenants/:id" element={<RequirePlatformAdmin><AdminTenantDetailPage /></RequirePlatformAdmin>} />
             <Route path="/conversations" element={<ConversationsPage />} />
             <Route path="/customers" element={<CustomersPage />} />
             <Route path="/leads" element={<LeadsPage />} />

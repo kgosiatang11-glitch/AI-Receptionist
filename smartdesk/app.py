@@ -57,6 +57,7 @@ def create_app(config_object=None) -> Flask:
 
 
 def _register_platform(app: Flask) -> None:
+    from smartdesk.api.admin_api import admin_api
     from smartdesk.api.calendar_api import calendar_api, calendar_oauth
     from smartdesk.api.config_api import config_api
     from smartdesk.api.dashboard import dashboard_api
@@ -66,6 +67,7 @@ def _register_platform(app: Flask) -> None:
     app.register_blueprint(dashboard_api, url_prefix="/api/v1")
     app.register_blueprint(config_api, url_prefix="/api/v1")
     app.register_blueprint(calendar_api, url_prefix="/api/v1")
+    app.register_blueprint(admin_api, url_prefix="/api/v1")
     app.register_blueprint(calendar_oauth)  # no prefix: Google's redirect target
 
     @app.teardown_request

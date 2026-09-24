@@ -71,6 +71,7 @@ class TenantScoped:
 
 TENANT_STATUSES = ("active", "development", "suspended")
 TENANT_TYPES = ("technology", "sports", "beauty", "test", "other")
+TENANT_PLANS = ("basic", "professional", "enterprise")
 
 
 class Tenant(TimestampMixin, db.Model):
@@ -83,6 +84,7 @@ class Tenant(TimestampMixin, db.Model):
     name = db.Column(String(160), nullable=False)
     business_type = db.Column(String(32), nullable=False, default="other")
     status = db.Column(String(16), nullable=False, default="active")
+    plan = db.Column(String(20), nullable=False, default="basic")
     timezone = db.Column(String(64), nullable=False, default="Africa/Gaborone")
     # True for the internal SmartDesk tenant and the Test Business tenant.
     is_internal = db.Column(Boolean, nullable=False, default=False)
@@ -91,11 +93,21 @@ class Tenant(TimestampMixin, db.Model):
     # Where escalations go for THIS tenant. Never a platform-wide constant.
     escalation_whatsapp = db.Column(String(32))
     escalation_email = db.Column(String(160))
+    # What the Super Admin typed in when creating this tenant, before any
+    # real Supabase account exists for the owner. Purely informational --
+    # the actual access grant is a Membership row (see POST /tenants/<id>/owner
+    # in smartdesk/api/admin_api.py), never these fields.
+    owner_name = db.Column(String(160))
+    owner_email = db.Column(String(160))
+    owner_phone = db.Column(String(32))
     settings = db.Column(JSONType, nullable=False, default=dict)
 
     __table_args__ = (
         CheckConstraint(
             "status in ('active','development','suspended')", name="ck_tenant_status"
+        ),
+        CheckConstraint(
+            "plan in ('basic','professional','enterprise')", name="ck_tenant_plan"
         ),
     )
 
@@ -106,9 +118,14 @@ class Tenant(TimestampMixin, db.Model):
             "name": self.name,
             "business_type": self.business_type,
             "status": self.status,
+            "plan": self.plan,
             "timezone": self.timezone,
             "is_internal": self.is_internal,
             "is_test_data": self.is_test_data,
+            "owner_name": self.owner_name,
+            "owner_email": self.owner_email,
+            "owner_phone": self.owner_phone,
+            "created_at": _iso(self.created_at),
         }
 
 
