@@ -116,6 +116,12 @@ def _sync_user(claims) -> User:
             full_name=(claims.raw.get("user_metadata") or {}).get("full_name"),
         )
         db.session.add(user)
+        # Column defaults (is_active=True, id=uuid4()) are only applied by
+        # SQLAlchemy at flush time, not on construction. Flushing here --
+        # before the is_active check below -- avoids rejecting every
+        # brand-new signup with a false "This account has been deactivated"
+        # (the in-memory attribute would otherwise still read None).
+        db.session.flush()
 
     # Bootstrap: emails listed in PLATFORM_ADMIN_EMAILS are platform staff.
     # The flag is persisted in our DB and is the only source of truth for it.

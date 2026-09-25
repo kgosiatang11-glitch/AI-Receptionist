@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
-import { customerLabel, formatDateTime, relativeTime, supabase, supabaseConfigured } from "../lib/api.js";
+import { Link, useNavigate } from "react-router-dom";
+import { apiRequest, customerLabel, formatDateTime, relativeTime, supabase, supabaseConfigured } from "../lib/api.js";
 import { useApi, useSession } from "../lib/session.jsx";
 import {
   Badge,
@@ -579,21 +579,135 @@ export function VerifyEmailPage() {
   );
 }
 
-/* Authenticated, verified, but not linked to any tenant yet. */
+/* Authenticated, verified, but not linked to any tenant yet. This is the
+ * self-service "Create Your Business" step -- the ONLY way a customer
+ * tenant gets created. It calls POST /api/v1/signup/business directly
+ * (there is no tenant yet, so useSession().call is not used -- that helper
+ * always attaches whatever tenant is currently selected, which is exactly
+ * what must NOT happen here). On success it reloads /me and lands the
+ * owner straight on their new dashboard -- never through any admin flow. */
 export function NoBusinessPage() {
-  const { signOut } = useSession();
+  const { signOut, reload } = useSession();
+  const navigate = useNavigate();
+  const [form, setForm] = useState({
+    business_name: "",
+    business_email: "",
+    phone: "",
+    location: "",
+  });
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const set = (key) => (e) =>
+    setForm((prev) => ({ ...prev, [key]: e.target.value }));
+
+  async function submit(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await apiRequest("/signup/business", { method: "POST", body: form });
+      // Refresh /me so the new membership shows up, then go straight to
+      // the tenant dashboard -- no admin step, no extra confirmation page.
+      await reload();
+      navigate("/", { replace: true });
+    } catch (err) {
+      if (err.status === 409) {
+        setError(
+          "This account is already linked to a business. Try refreshing the page."
+        );
+      } else if (err.status === 401) {
+        setError("Your session has expired. Please sign in again.");
+      } else {
+        // 400 (validation) and network/server errors: the backend's own
+        // message is specific and safe to show as-is (e.g. which field is
+        // missing); anything else falls back to a generic message.
+        setError(err.message || "Something went wrong. Please try again.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="sd-login">
-      <div className="sd-login-card sd-card">
-        <h2>You don't have a business assigned yet.</h2>
-        <p style={{ color: "var(--sd-ink-soft)", fontSize: 13 }}>
-          Your SmartDesk account is active, but no business has been
-          assigned to it yet. Please contact SmartDesk to activate your
-          business.
+      <div className="sd-login-card">
+        <div className="sd-brand" style={{ justifyContent: "center", paddingBottom: 18 }}>
+          <span className="sd-brand-mark">S</span>
+          SmartDesk AI
+        </div>
+        <Card>
+          <h2 style={{ marginBottom: 4 }}>Create your business</h2>
+          <p style={{ color: "var(--sd-ink-faint)", fontSize: 12.5, margin: "0 0 18px" }}>
+            Your SmartDesk account is ready. Tell us about your business and
+            your dashboard is set up immediately -- no waiting on approval.
+          </p>
+
+          <ErrorNotice message={error} />
+
+          <form onSubmit={submit}>
+            <div className="sd-field">
+              <label className="sd-label" htmlFor="business-name">Business name</label>
+              <input
+                id="business-name"
+                className="sd-input"
+                type="text"
+                required
+                value={form.business_name}
+                onChange={set("business_name")}
+                disabled={busy}
+              />
+            </div>
+            <div className="sd-field">
+              <label className="sd-label" htmlFor="business-email">Business email</label>
+              <input
+                id="business-email"
+                className="sd-input"
+                type="email"
+                required
+                value={form.business_email}
+                onChange={set("business_email")}
+                disabled={busy}
+              />
+            </div>
+            <div className="sd-field">
+              <label className="sd-label" htmlFor="business-phone">Business phone</label>
+              <input
+                id="business-phone"
+                className="sd-input"
+                type="tel"
+                required
+                value={form.phone}
+                onChange={set("phone")}
+                disabled={busy}
+              />
+            </div>
+            <div className="sd-field">
+              <label className="sd-label" htmlFor="business-location">Business location</label>
+              <input
+                id="business-location"
+                className="sd-input"
+                type="text"
+                required
+                placeholder="e.g. Plot 123, Francistown, Botswana"
+                value={form.location}
+                onChange={set("location")}
+                disabled={busy}
+              />
+            </div>
+            <button
+              className="sd-btn"
+              style={{ width: "100%", justifyContent: "center" }}
+              disabled={busy}
+            >
+              {busy ? "Creating your business…" : "Create my business"}
+            </button>
+          </form>
+        </Card>
+
+        <p style={{ textAlign: "center", fontSize: 12.5, color: "var(--sd-ink-faint)", marginTop: 16 }}>
+          <LinkButton onClick={signOut}>Sign out</LinkButton>
         </p>
-        <button className="sd-btn is-ghost" style={{ marginTop: 16 }} onClick={signOut}>
-          Sign Out
-        </button>
       </div>
     </div>
   );

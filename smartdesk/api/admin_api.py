@@ -21,9 +21,7 @@ from flask import Blueprint, g, jsonify, request
 
 from smartdesk.extensions import db
 from smartdesk.models import (
-    AUTOMATION_KINDS,
     ROLE_OWNER,
-    Automation,
     Booking,
     Channel,
     Conversation,
@@ -33,27 +31,13 @@ from smartdesk.models import (
     User,
 )
 from smartdesk.security.rbac import record_audit, require_platform_admin
-from smartdesk.services.knowledge import seed_sections
+from smartdesk.services.tenant_provisioning import (
+    VALID_PLANS,
+    VALID_STATUSES,
+    provision_new_tenant,
+)
 
 admin_api = Blueprint("admin_api", __name__)
-
-VALID_PLANS = ("basic", "professional", "enterprise")
-VALID_STATUSES = ("active", "development", "suspended")
-
-
-def _slugify(name: str) -> str:
-    base = "".join(ch.lower() if ch.isalnum() else "-" for ch in name.strip())
-    while "--" in base:
-        base = base.replace("--", "-")
-    base = base.strip("-") or "tenant"
-    slug = base
-    suffix = 1
-    # Guarantee uniqueness against the real unique constraint rather than
-    # hoping the caller's chosen name never collides.
-    while Tenant.query.filter_by(slug=slug).one_or_none() is not None:
-        suffix += 1
-        slug = f"{base}-{suffix}"
-    return slug
 
 
 def _owner_linked(tenant_id: str) -> dict | None:
@@ -133,8 +117,7 @@ def create_tenant():
 
     owner_email = (payload.get("owner_email") or "").strip() or None
 
-    tenant = Tenant(
-        slug=_slugify(name),
+    tenant = provision_new_tenant(
         name=name,
         business_type=payload.get("business_category") or "other",
         status=status,
@@ -143,19 +126,6 @@ def create_tenant():
         owner_email=owner_email,
         owner_phone=(payload.get("phone") or "").strip() or None,
     )
-    db.session.add(tenant)
-    db.session.flush()
-
-    # Same shape every other tenant gets -- an empty, honest starting point.
-    # Never invents business facts for a tenant that hasn't supplied any.
-    db.session.add(ReceptionistProfile(tenant_id=tenant.id, sales_mode_enabled=False))
-    seed_sections(tenant, {})
-    for kind in AUTOMATION_KINDS:
-        db.session.add(
-            Automation(
-                tenant_id=tenant.id, kind=kind, name=kind.replace("_", " ").title()
-            )
-        )
 
     record_audit(
         "tenant.create", "tenant", tenant.id, tenant_id=tenant.id,
