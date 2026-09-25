@@ -35,10 +35,19 @@ from smartdesk.security.jwt_auth import AuthError, bearer_token_from_header, dec
 class Principal:
     user: User
     is_platform_admin: bool
+    # Whether Supabase has actually confirmed this identity's email. See
+    # ``_is_email_confirmed`` below for how this is determined and why the
+    # token itself is not trusted for it.
+    email_verified: bool = True
     # tenant_id -> role, for tenants this user belongs to.
     roles: dict = field(default_factory=dict)
 
     def role_for(self, tenant_id: str) -> str | None:
+        if not self.email_verified:
+            # No tenant access -- not even platform-admin access -- until
+            # the email is confirmed. See requirement: unverified email
+            # must never be treated as trusted.
+            return None
         if self.is_platform_admin:
             # Platform admins act with owner-level rights on any tenant.
             return ROLE_OWNER
@@ -58,17 +67,49 @@ def role_at_least(role: str | None, minimum: str) -> bool:
 
 
 def _sync_user(claims) -> User:
-    """Find or create the platform-side profile for a Supabase subject."""
+    """Find or create the platform-side profile for a Supabase subject.
+
+    Users are matched by the verified Supabase subject id (``sub``) only.
+    A previous version of this function also matched by email when no
+    subject match was found, and silently repointed that row's
+    ``supabase_user_id`` to the new subject. That is an account takeover:
+    any Supabase identity presenting a matching email string -- not
+    necessarily the same person -- would inherit the existing user's
+    memberships on its very first request.
+
+    Nothing in this codebase actually relies on that rebind. The only way
+    a Membership is ever granted is ``flask grant`` / the admin "link
+    owner" endpoint, and both require the user to already have signed in
+    via Supabase at least once (i.e. to already have a matching
+    ``supabase_user_id`` row) -- see ``smartdesk/seeds.py``. So there is no
+    legitimate "invited before first login" case for this to handle.
+
+    The fix is therefore simply: never rebind. An email collision with a
+    different subject is treated as a conflict, not an invitation, and is
+    refused rather than resolved by guessing.
+    """
     user = User.query.filter_by(supabase_user_id=claims.subject).one_or_none()
-    if user is None and claims.email:
-        # A user invited by email before their first login.
-        user = User.query.filter_by(email=claims.email).one_or_none()
-        if user is not None:
-            user.supabase_user_id = claims.subject
 
     if user is None:
         if not claims.email:
             raise AuthError("Token has no email claim; cannot provision user")
+
+        conflicting = User.query.filter_by(email=claims.email).one_or_none()
+        if conflicting is not None:
+            current_app.logger.warning(
+                "Refusing to rebind user %s: email %s is already bound to "
+                "supabase_user_id=%s, but this token's subject is %s",
+                conflicting.id,
+                claims.email,
+                conflicting.supabase_user_id,
+                claims.subject,
+            )
+            raise AuthError(
+                "This email is already associated with a different "
+                "account. Contact SmartDesk support.",
+                status=409,
+            )
+
         user = User(
             supabase_user_id=claims.subject,
             email=claims.email,
@@ -91,6 +132,48 @@ def _sync_user(claims) -> User:
     return user
 
 
+def _is_email_confirmed(claims) -> bool:
+    """Whether Supabase has actually confirmed this identity's email.
+
+    The access token itself is not a safe source for this. The only
+    verification-shaped field Supabase puts in the JWT is
+    ``user_metadata.email_verified``, and ``user_metadata`` can be edited
+    by the signed-in user themselves via ``supabase.auth.updateUser({data:
+    {...}})`` -- so trusting it would let anyone flip their own flag to
+    true. Nothing else in the default token is authoritative either.
+
+    The real, authoritative value is the ``email_confirmed_at`` column on
+    Supabase's own ``auth.users`` table. This function reads that value
+    through the ``public.is_email_confirmed`` SECURITY DEFINER function,
+    so the application does not need direct access to the ``auth`` schema.
+
+    On the SQLite database used in tests (and any non-Postgres backend)
+    there is no ``auth`` schema, so this returns True there by default;
+    tests that need to exercise the unverified path patch this function
+    directly (see tests/test_email_verification.py).
+    """
+    db_uri = current_app.config.get("SQLALCHEMY_DATABASE_URI") or ""
+    if not db_uri.startswith("postgres"):
+        return True
+    try:
+        row = db.session.execute(
+            db.text("SELECT public.is_email_confirmed(:sub)"),
+            {"sub": claims.subject},
+        ).first()
+    except Exception:
+        # Fail closed: if we cannot prove the email is confirmed, treat it
+        # as unconfirmed rather than trusting it. See the Phase 1 delivery
+        # notes for what this means operationally and how to verify it
+        # works against your project before relying on it.
+        current_app.logger.exception(
+            "Could not verify email confirmation for subject %s; "
+            "denying tenant access until this is resolved",
+            claims.subject,
+        )
+        return False
+    return bool(row and row[0] is not None)
+
+
 def load_principal() -> Principal:
     token = bearer_token_from_header(request.headers.get("Authorization"))
     claims = decode_token(token)
@@ -100,7 +183,10 @@ def load_principal() -> Principal:
         for m in Membership.query.filter_by(user_id=user.id).all()
     }
     return Principal(
-        user=user, is_platform_admin=user.is_platform_admin, roles=roles
+        user=user,
+        is_platform_admin=user.is_platform_admin,
+        email_verified=_is_email_confirmed(claims),
+        roles=roles,
     )
 
 

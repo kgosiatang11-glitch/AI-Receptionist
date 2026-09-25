@@ -17,6 +17,10 @@ export function SessionProvider({ children }) {
   const [activeTenantId, setActiveTenantId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // True while Supabase reports a password-recovery session (the user
+  // followed the "reset password" email link). The app must not silently
+  // drop them into the dashboard without a way to set a new password.
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
 
   useEffect(() => {
     if (!supabaseConfigured) {
@@ -27,7 +31,8 @@ export function SessionProvider({ children }) {
       setSession(data.session ?? null);
       if (!data.session) setLoading(false);
     });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, next) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, next) => {
+      if (event === "PASSWORD_RECOVERY") setPasswordRecovery(true);
       setSession(next);
       if (!next) {
         setProfile(null);
@@ -111,6 +116,8 @@ export function SessionProvider({ children }) {
     can,
     call,
     reload: loadProfile,
+    passwordRecovery,
+    clearPasswordRecovery: () => setPasswordRecovery(false),
   };
 
   return (

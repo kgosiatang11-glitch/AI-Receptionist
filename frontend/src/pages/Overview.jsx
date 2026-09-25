@@ -14,7 +14,63 @@ import {
 
 /* ------------------------------------------------------------------ login */
 
-export function LoginPage() {
+const REDIRECT_URL = typeof window !== "undefined" ? window.location.origin : undefined;
+
+function LinkButton({ children, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        background: "none",
+        border: 0,
+        padding: 0,
+        color: "var(--sd-accent)",
+        fontSize: 12.5,
+        fontWeight: 600,
+        cursor: "pointer",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function GoogleButton({ busy, onClick }) {
+  return (
+    <button
+      type="button"
+      className="sd-btn is-ghost"
+      style={{ width: "100%", justifyContent: "center", marginBottom: 14 }}
+      disabled={busy}
+      onClick={onClick}
+    >
+      Continue with Google
+    </button>
+  );
+}
+
+function Divider() {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        margin: "4px 0 16px",
+        color: "var(--sd-ink-faint)",
+        fontSize: 11.5,
+      }}
+    >
+      <span style={{ flex: 1, height: 1, background: "var(--sd-border)" }} />
+      or
+      <span style={{ flex: 1, height: 1, background: "var(--sd-border)" }} />
+    </div>
+  );
+}
+
+/* Sign in with email/password, plus a Google option. */
+function SignInForm({ onSwitchToSignup, onSwitchToForgot }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
@@ -31,12 +87,304 @@ export function LoginPage() {
     // Deliberately generic: the message must not reveal whether the email
     // exists on the platform.
     if (authError) {
-  console.error("Supabase login error:", authError);
-  setError(authError.message);
+      console.error("Supabase login error:", authError);
+      setError(authError.message);
     }
-
     setBusy(false);
   }
+
+  async function withGoogle() {
+    setBusy(true);
+    setError(null);
+    const { error: authError } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: REDIRECT_URL },
+    });
+    if (authError) {
+      console.error("Supabase Google sign-in error:", authError);
+      setError(authError.message);
+      setBusy(false);
+    }
+    // On success the browser is redirected to Google, so there is nothing
+    // further to do here.
+  }
+
+  return (
+    <Card>
+      <h2 style={{ marginBottom: 4 }}>Control Center</h2>
+      <p style={{ color: "var(--sd-ink-faint)", fontSize: 12.5, margin: "0 0 18px" }}>
+        Sign in to manage your AI receptionist.
+      </p>
+
+      <ErrorNotice message={error} />
+
+      <GoogleButton busy={busy} onClick={withGoogle} />
+      <Divider />
+
+      <form onSubmit={submit}>
+        <div className="sd-field">
+          <label className="sd-label" htmlFor="email">Email</label>
+          <input
+            id="email"
+            className="sd-input"
+            type="email"
+            autoComplete="username"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </div>
+        <div className="sd-field">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <label className="sd-label" htmlFor="password" style={{ marginBottom: 0 }}>Password</label>
+            <LinkButton onClick={onSwitchToForgot}>Forgot password?</LinkButton>
+          </div>
+          <input
+            id="password"
+            className="sd-input"
+            type="password"
+            autoComplete="current-password"
+            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </div>
+        <button
+          className="sd-btn"
+          style={{ width: "100%", justifyContent: "center" }}
+          disabled={busy}
+        >
+          {busy ? "Signing in…" : "Sign in"}
+        </button>
+      </form>
+
+      <p style={{ textAlign: "center", fontSize: 12.5, color: "var(--sd-ink-faint)", marginTop: 16 }}>
+        New to SmartDesk?{" "}
+        <LinkButton onClick={onSwitchToSignup}>Create an account</LinkButton>
+      </p>
+    </Card>
+  );
+}
+
+/* Customer self-signup. Deliberately creates only a SmartDesk account --
+ * never a tenant, and never asks for business information. A tenant is
+ * linked later by a Super Admin (see smartdesk/api/admin_api.py). */
+function SignUpForm({ onSwitchToSignIn, onSignedUp }) {
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    const { data, error: authError } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: { full_name: fullName },
+        emailRedirectTo: REDIRECT_URL,
+      },
+    });
+    if (authError) {
+      console.error("Supabase signup error:", authError);
+      setError(authError.message);
+      setBusy(false);
+      return;
+    }
+    // If email confirmation is required, Supabase returns a user with no
+    // active session yet -- that's the "check your email" case. If a
+    // session did come back (confirmation disabled project-side), the
+    // backend still won't grant tenant access until Supabase reports the
+    // email as confirmed, so it's safe to just let the session take over.
+    if (!data.session) {
+      onSignedUp();
+    }
+    setBusy(false);
+  }
+
+  async function withGoogle() {
+    setBusy(true);
+    setError(null);
+    const { error: authError } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: REDIRECT_URL },
+    });
+    if (authError) {
+      console.error("Supabase Google sign-in error:", authError);
+      setError(authError.message);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <h2 style={{ marginBottom: 4 }}>Create your account</h2>
+      <p style={{ color: "var(--sd-ink-faint)", fontSize: 12.5, margin: "0 0 18px" }}>
+        Set up your SmartDesk login. A SmartDesk administrator will connect
+        it to your business afterwards.
+      </p>
+
+      <ErrorNotice message={error} />
+
+      <GoogleButton busy={busy} onClick={withGoogle} />
+      <Divider />
+
+      <form onSubmit={submit}>
+        <div className="sd-field">
+          <label className="sd-label" htmlFor="full-name">Full name</label>
+          <input
+            id="full-name"
+            className="sd-input"
+            type="text"
+            autoComplete="name"
+            required
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+          />
+        </div>
+        <div className="sd-field">
+          <label className="sd-label" htmlFor="signup-email">Email</label>
+          <input
+            id="signup-email"
+            className="sd-input"
+            type="email"
+            autoComplete="username"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </div>
+        <div className="sd-field">
+          <label className="sd-label" htmlFor="signup-password">Password</label>
+          <input
+            id="signup-password"
+            className="sd-input"
+            type="password"
+            autoComplete="new-password"
+            minLength={8}
+            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </div>
+        <button
+          className="sd-btn"
+          style={{ width: "100%", justifyContent: "center" }}
+          disabled={busy}
+        >
+          {busy ? "Creating account…" : "Create Account"}
+        </button>
+      </form>
+
+      <p style={{ textAlign: "center", fontSize: 12.5, color: "var(--sd-ink-faint)", marginTop: 16 }}>
+        Already have an account? <LinkButton onClick={onSwitchToSignIn}>Sign in</LinkButton>
+      </p>
+    </Card>
+  );
+}
+
+function CheckEmailNotice({ onBackToSignIn }) {
+  return (
+    <Card>
+      <h2 style={{ marginBottom: 4 }}>Check your email</h2>
+      <p style={{ color: "var(--sd-ink-soft)", fontSize: 13, margin: "0 0 16px" }}>
+        We've sent you a confirmation link. Please verify your email before
+        signing in -- your SmartDesk account won't have access to a business
+        until it's confirmed.
+      </p>
+      <button
+        className="sd-btn is-ghost"
+        style={{ width: "100%", justifyContent: "center" }}
+        onClick={onBackToSignIn}
+      >
+        Back to sign in
+      </button>
+    </Card>
+  );
+}
+
+function ForgotPasswordForm({ onBackToSignIn }) {
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  async function submit(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    const { error: authError } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: REDIRECT_URL,
+    });
+    // Generic on success and on failure alike: must not reveal whether the
+    // email exists on the platform.
+    if (authError) console.error("Supabase reset-password error:", authError);
+    setSent(true);
+    setBusy(false);
+  }
+
+  if (sent) {
+    return (
+      <Card>
+        <h2 style={{ marginBottom: 4 }}>Check your email</h2>
+        <p style={{ color: "var(--sd-ink-soft)", fontSize: 13, margin: "0 0 16px" }}>
+          If an account exists for {email}, a password reset link is on its
+          way.
+        </p>
+        <button
+          className="sd-btn is-ghost"
+          style={{ width: "100%", justifyContent: "center" }}
+          onClick={onBackToSignIn}
+        >
+          Back to sign in
+        </button>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <h2 style={{ marginBottom: 4 }}>Reset your password</h2>
+      <p style={{ color: "var(--sd-ink-faint)", fontSize: 12.5, margin: "0 0 18px" }}>
+        Enter your account email and we'll send you a reset link.
+      </p>
+
+      <ErrorNotice message={error} />
+
+      <form onSubmit={submit}>
+        <div className="sd-field">
+          <label className="sd-label" htmlFor="forgot-email">Email</label>
+          <input
+            id="forgot-email"
+            className="sd-input"
+            type="email"
+            autoComplete="username"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </div>
+        <button
+          className="sd-btn"
+          style={{ width: "100%", justifyContent: "center" }}
+          disabled={busy}
+        >
+          {busy ? "Sending…" : "Send reset link"}
+        </button>
+      </form>
+
+      <p style={{ textAlign: "center", fontSize: 12.5, color: "var(--sd-ink-faint)", marginTop: 16 }}>
+        <LinkButton onClick={onBackToSignIn}>Back to sign in</LinkButton>
+      </p>
+    </Card>
+  );
+}
+
+export function LoginPage() {
+  const [mode, setMode] = useState("signin"); // signin | signup | signup-sent | forgot
 
   if (!supabaseConfigured) {
     return (
@@ -55,65 +403,197 @@ export function LoginPage() {
   return (
     <div className="sd-login">
       <div className="sd-login-card">
-        <div
-          className="sd-brand"
-          style={{ justifyContent: "center", paddingBottom: 18 }}
-        >
+        <div className="sd-brand" style={{ justifyContent: "center", paddingBottom: 18 }}>
+          <span className="sd-brand-mark">S</span>
+          SmartDesk AI
+        </div>
+
+        {mode === "signin" && (
+          <SignInForm
+            onSwitchToSignup={() => setMode("signup")}
+            onSwitchToForgot={() => setMode("forgot")}
+          />
+        )}
+        {mode === "signup" && (
+          <SignUpForm
+            onSwitchToSignIn={() => setMode("signin")}
+            onSignedUp={() => setMode("signup-sent")}
+          />
+        )}
+        {mode === "signup-sent" && (
+          <CheckEmailNotice onBackToSignIn={() => setMode("signin")} />
+        )}
+        {mode === "forgot" && (
+          <ForgotPasswordForm onBackToSignIn={() => setMode("signin")} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------------------------------------- recovery flow */
+
+/* Shown instead of the rest of the app while Supabase reports a password
+ * recovery session (the user clicked the emailed reset link). The user
+ * must set a new password before continuing -- they are never silently
+ * left signed in with no way to do that. */
+export function ResetPasswordPage() {
+  const { clearPasswordRecovery } = useSession();
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+
+  async function submit(event) {
+    event.preventDefault();
+    if (password !== confirm) {
+      setError("Passwords do not match");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const { error: authError } = await supabase.auth.updateUser({ password });
+    if (authError) {
+      console.error("Supabase password update error:", authError);
+      setError(authError.message);
+      setBusy(false);
+      return;
+    }
+    setDone(true);
+    setBusy(false);
+  }
+
+  return (
+    <div className="sd-login">
+      <div className="sd-login-card">
+        <div className="sd-brand" style={{ justifyContent: "center", paddingBottom: 18 }}>
           <span className="sd-brand-mark">S</span>
           SmartDesk AI
         </div>
         <Card>
-          <h2 style={{ marginBottom: 4 }}>Control Center</h2>
-          <p
-            style={{
-              color: "var(--sd-ink-faint)",
-              fontSize: 12.5,
-              margin: "0 0 18px",
-            }}
-          >
-            Sign in to manage your AI receptionist.
-          </p>
-
-          <ErrorNotice message={error} />
-
-          <form onSubmit={submit}>
-            <div className="sd-field">
-              <label className="sd-label" htmlFor="email">
-                Email
-              </label>
-              <input
-                id="email"
-                className="sd-input"
-                type="email"
-                autoComplete="username"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </div>
-            <div className="sd-field">
-              <label className="sd-label" htmlFor="password">
-                Password
-              </label>
-              <input
-                id="password"
-                className="sd-input"
-                type="password"
-                autoComplete="current-password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </div>
-            <button
-              className="sd-btn"
-              style={{ width: "100%", justifyContent: "center" }}
-              disabled={busy}
-            >
-              {busy ? "Signing in…" : "Sign in"}
-            </button>
-          </form>
+          <h2 style={{ marginBottom: 4 }}>Set a new password</h2>
+          {done ? (
+            <>
+              <p style={{ color: "var(--sd-ink-soft)", fontSize: 13, marginBottom: 16 }}>
+                Your password has been updated. You're signed in with your new
+                password.
+              </p>
+              <button
+                className="sd-btn"
+                style={{ width: "100%", justifyContent: "center" }}
+                onClick={clearPasswordRecovery}
+              >
+                Continue
+              </button>
+            </>
+          ) : (
+            <>
+              <p style={{ color: "var(--sd-ink-faint)", fontSize: 12.5, margin: "0 0 18px" }}>
+                Choose a new password for your account.
+              </p>
+              <ErrorNotice message={error} />
+              <form onSubmit={submit}>
+                <div className="sd-field">
+                  <label className="sd-label" htmlFor="new-password">New password</label>
+                  <input
+                    id="new-password"
+                    className="sd-input"
+                    type="password"
+                    autoComplete="new-password"
+                    minLength={8}
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                </div>
+                <div className="sd-field">
+                  <label className="sd-label" htmlFor="confirm-password">Confirm password</label>
+                  <input
+                    id="confirm-password"
+                    className="sd-input"
+                    type="password"
+                    autoComplete="new-password"
+                    minLength={8}
+                    required
+                    value={confirm}
+                    onChange={(e) => setConfirm(e.target.value)}
+                  />
+                </div>
+                <button
+                  className="sd-btn"
+                  style={{ width: "100%", justifyContent: "center" }}
+                  disabled={busy}
+                >
+                  {busy ? "Saving…" : "Set new password"}
+                </button>
+              </form>
+            </>
+          )}
         </Card>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------- verification /
+   no-business states */
+
+/* Authenticated, but Supabase has not confirmed the email yet. Distinct
+ * from NoBusinessPage: nothing has gone wrong here, the account just is not
+ * usable until verification completes. */
+export function VerifyEmailPage() {
+  const { signOut, session } = useSession();
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function resend() {
+    setBusy(true);
+    const email = session?.user?.email;
+    if (email) {
+      await supabase.auth.resend({ type: "signup", email });
+    }
+    setSent(true);
+    setBusy(false);
+  }
+
+  return (
+    <div className="sd-login">
+      <div className="sd-login-card sd-card">
+        <h2>Verify your email</h2>
+        <p style={{ color: "var(--sd-ink-soft)", fontSize: 13 }}>
+          Your SmartDesk account is active, but your email address hasn't
+          been confirmed yet. Please check your inbox for the confirmation
+          link before continuing.
+        </p>
+        <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+          <button className="sd-btn is-ghost" disabled={busy} onClick={resend}>
+            {sent ? "Email sent" : busy ? "Sending…" : "Resend email"}
+          </button>
+          <button className="sd-btn is-ghost" onClick={signOut}>
+            Sign Out
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* Authenticated, verified, but not linked to any tenant yet. */
+export function NoBusinessPage() {
+  const { signOut } = useSession();
+  return (
+    <div className="sd-login">
+      <div className="sd-login-card sd-card">
+        <h2>You don't have a business assigned yet.</h2>
+        <p style={{ color: "var(--sd-ink-soft)", fontSize: 13 }}>
+          Your SmartDesk account is active, but no business has been
+          assigned to it yet. Please contact SmartDesk to activate your
+          business.
+        </p>
+        <button className="sd-btn is-ghost" style={{ marginTop: 16 }} onClick={signOut}>
+          Sign Out
+        </button>
       </div>
     </div>
   );

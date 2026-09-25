@@ -1,7 +1,13 @@
 import { Route, Routes } from "react-router-dom";
 import { Sidebar } from "./components/ui.jsx";
 import { useSession } from "./lib/session.jsx";
-import { LoginPage, OverviewPage } from "./pages/Overview.jsx";
+import {
+  LoginPage,
+  NoBusinessPage,
+  OverviewPage,
+  ResetPasswordPage,
+  VerifyEmailPage,
+} from "./pages/Overview.jsx";
 import {
   BookingsPage,
   ConversationsPage,
@@ -37,7 +43,12 @@ function RequirePlatformAdmin({ children }) {
 }
 
 export default function App() {
-  const { session, loading, error, tenants } = useSession();
+  const { session, loading, error, tenants, user, passwordRecovery } = useSession();
+
+  // The user followed a "reset password" email link. This takes priority
+  // over everything else -- they must set a new password before landing
+  // anywhere else, authenticated or not.
+  if (passwordRecovery) return <ResetPasswordPage />;
 
   if (loading) {
     return <div className="sd-login"><div className="sd-empty">Loading…</div></div>;
@@ -58,20 +69,18 @@ export default function App() {
     );
   }
 
-  // Authenticated but not a member of any tenant. Showing an empty dashboard
-  // would be misleading, so say so plainly.
+  // Authenticated, but Supabase has not confirmed the email yet. The
+  // backend never grants tenant access in this state (see
+  // smartdesk/security/rbac.py::_is_email_confirmed), so /me always comes
+  // back with an empty tenant list here regardless of any membership.
+  if (user && user.email_verified === false) {
+    return <VerifyEmailPage />;
+  }
+
+  // Authenticated and verified, but not a member of any tenant. Showing an
+  // empty dashboard would be misleading, so say so plainly.
   if (tenants.length === 0) {
-    return (
-      <div className="sd-login">
-        <div className="sd-login-card sd-card">
-          <h2>No business assigned</h2>
-          <p style={{ color: "var(--sd-ink-soft)", fontSize: 13 }}>
-            Your account is not yet linked to a business. Ask a SmartDesk
-            administrator to grant you access.
-          </p>
-        </div>
-      </div>
-    );
+    return <NoBusinessPage />;
   }
 
   return (

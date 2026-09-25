@@ -52,6 +52,16 @@ def me():
     returns the others.
     """
     principal = g.principal
+    user_payload = {**principal.user.to_dict(), "email_verified": principal.email_verified}
+
+    if not principal.email_verified:
+        # Never hand back membership info -- not even that memberships
+        # exist -- until Supabase has confirmed this identity's email.
+        # The frontend uses email_verified to show a distinct "check your
+        # email" state rather than the "no business assigned" state.
+        db.session.commit()
+        return jsonify({"user": user_payload, "tenants": [], "can_switch_tenants": False})
+
     if principal.is_platform_admin:
         tenants = Tenant.query.order_by(Tenant.name).all()
         memberships = [
@@ -70,7 +80,7 @@ def me():
     db.session.commit()
     return jsonify(
         {
-            "user": principal.user.to_dict(),
+            "user": user_payload,
             "tenants": memberships,
             "can_switch_tenants": principal.is_platform_admin
             or len(memberships) > 1,
