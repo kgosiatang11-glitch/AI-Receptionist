@@ -1,22 +1,28 @@
-"""Seed the four initial tenants.
+"""Production seeding and admin-promotion CLI commands.
 
-Run with ``flask --app wsgi seed``.  Idempotent: existing tenants are left
-alone, so it is safe to re-run after adding a channel or knowledge section.
+Run with ``flask --app wsgi seed``. A fresh, sellable installation of this
+platform starts with **zero pre-existing tenants**. This command does not
+create any business-specific data -- there is nothing here for a new
+customer to inherit, edit around, or accidentally expose.
 
-What this deliberately does NOT do:
+The intended path to your first tenant and platform administrator is:
 
-* invent salon business facts — the salon's knowledge sections are created
-  empty and unpublished, with the tenant named by ``SALON_TENANT_NAME``;
-* invent phone numbers — channels are only created from environment variables
-  you supply, because a wrong number here would silently route one business's
-  customers to another;
-* claim booking-system API access — 10by20's existing external booking system
-  is recorded as an external integration reference, not an API client.
+1. Sign up through the dashboard (Supabase Auth).
+2. Confirm your email.
+3. Create your business via the normal self-service ``NoBusinessPage`` /
+   ``POST /signup/business`` flow, OR have a platform administrator create
+   it for you via the Admin Tenants screen / ``POST /admin/tenants``.
+4. Promote your account to platform administrator with:
+   ``flask --app wsgi grant you@yourcompany.com --platform-admin``
+
+Vendor-specific or development-only tenant data (e.g. a "SmartDesk AI" demo
+tenant, or a disposable test-business tenant) deliberately does NOT live
+here. See ``scripts/dev_seed.py`` for that -- it is a standalone,
+clearly-labelled development/test tool that is never wired into this app's
+CLI and is never run as part of a normal deployment.
 """
 
 from __future__ import annotations
-
-import os
 
 import click
 from flask.cli import with_appcontext
@@ -32,140 +38,15 @@ from smartdesk.models import (
 from smartdesk.services.knowledge import seed_sections
 from smartdesk.tenancy import normalize_address
 
-# SmartDesk's own sales copy. This is the ONLY tenant that gets it.
-SMARTDESK_KNOWLEDGE = {
-    "business_information": {
-        "body": (
-            "SmartDesk AI builds AI receptionists for businesses. O'Brien answers "
-            "customer enquiries around the clock over WhatsApp and phone calls, "
-            "provides business information, captures leads and assists with bookings."
-        )
-    },
-    "services": {
-        "data": {
-            "items": [
-                "AI WhatsApp Receptionists",
-                "24/7 Automated Customer Support",
-                "Appointment & Booking Automation",
-                "Customer FAQs",
-                "Lead capture",
-                "Business information",
-                "Multi-language support",
-                "Human handoff",
-                "Custom business knowledge",
-            ]
-        }
-    },
-    "pricing": {
-        "body": (
-            "Please contact sales for pricing plans tailored to your business "
-            "size and needs."
-        )
-    },
-    "opening_hours": {"body": "We are available 24 hours a day, 7 days a week."},
-}
 
-TENANT_SPECS = [
-    {
-        "slug": "smartdesk",
-        "name": "SmartDesk AI",
-        "business_type": "technology",
-        "status": "active",
-        "is_internal": True,
-        "is_test_data": False,
-        "knowledge": SMARTDESK_KNOWLEDGE,
-        "profile": {
-            "greeting": (
-                "Hello and welcome to SmartDesk AI! I'm O'Brien, your AI "
-                "Receptionist. How can I assist you today?"
-            ),
-            "voice_greeting": (
-                "Hello! Thank you for calling Smart Desk AI. How can I help you today?"
-            ),
-            # The platform's own tenant is the only one that sells.
-            "sales_mode_enabled": True,
-        },
-        "channel_env": {
-            "whatsapp": "SMARTDESK_WHATSAPP_NUMBER",
-            "voice": "SMARTDESK_VOICE_NUMBER",
-        },
-    },
-    {
-        "slug": "10by20",
-        "name": "10by20 Padel Club",
-        "business_type": "sports",
-        "status": "active",
-        "is_internal": False,
-        "is_test_data": False,
-        # Left empty on purpose: real opening hours, pricing and services must
-        # be entered by the club in the Control Center, not guessed here.
-        "knowledge": {},
-        "profile": {
-            "greeting": (
-                "Hello and welcome to 10by20 Padel Club! I'm O'Brien. "
-                "How can I help you today?"
-            ),
-            "voice_greeting": (
-                "Hello! Thank you for calling 10by20 Padel Club. "
-                "How can I help you today?"
-            ),
-            "sales_mode_enabled": False,
-        },
-        "channel_env": {
-            "whatsapp": "TENBY20_WHATSAPP_NUMBER",
-            "voice": "TENBY20_VOICE_NUMBER",
-        },
-        # Recorded as a reference only. SmartDesk has no API access to it.
-        "external_booking_system": "Playbypoint",
-    },
-    {
-        "slug": "salon",
-        # Overridden by SALON_TENANT_NAME once the real name is supplied.
-        "name": os.getenv("SALON_TENANT_NAME", "Salon (name pending)"),
-        "business_type": "beauty",
-        "status": "active",
-        "is_internal": False,
-        "is_test_data": False,
-        "knowledge": {},
-        "profile": {
-            "greeting": None,
-            "voice_greeting": None,
-            "sales_mode_enabled": False,
-        },
-        "channel_env": {
-            "whatsapp": "SALON_WHATSAPP_NUMBER",
-            "voice": "SALON_VOICE_NUMBER",
-        },
-    },
-    {
-        "slug": "test-business",
-        "name": "Test Business",
-        "business_type": "test",
-        "status": "development",
-        "is_internal": True,
-        # Everything created under this tenant is flagged as test data so it
-        # can never be mistaken for, or aggregated with, production figures.
-        "is_test_data": True,
-        "knowledge": {
-            "business_information": {
-                "body": "Development tenant used for local testing only."
-            },
-            "opening_hours": {"body": "Test hours: 08:00-17:00, Monday to Friday."},
-        },
-        "profile": {
-            "greeting": "Hello, this is the Test Business assistant.",
-            "voice_greeting": "Hello, this is the Test Business assistant.",
-            "sales_mode_enabled": False,
-        },
-        "channel_env": {
-            "whatsapp": "TEST_WHATSAPP_NUMBER",
-            "voice": "TEST_VOICE_NUMBER",
-        },
-    },
-]
+def seed_tenant(spec: dict) -> Tenant:
+    """Create or update a single tenant from a spec dict.
 
-
-def _seed_tenant(spec: dict) -> Tenant:
+    Generic, business-agnostic helper -- shared by this module (which, in
+    production, calls it zero times) and by ``scripts/dev_seed.py`` (which
+    uses it to set up development-only tenants). Kept here so that
+    behaviour cannot drift between the two call sites.
+    """
     tenant = Tenant.query.filter_by(slug=spec["slug"]).one_or_none()
     created = tenant is None
     if created:
@@ -186,8 +67,8 @@ def _seed_tenant(spec: dict) -> Tenant:
 
     seed_sections(tenant, spec.get("knowledge"))
 
-    for kind, env_name in spec["channel_env"].items():
-        address = normalize_address(os.getenv(env_name))
+    for kind, env_name in spec.get("channel_env", {}).items():
+        address = normalize_address(_env_value(env_name))
         if not address:
             continue
         existing = Channel.query.filter_by(kind=kind, address=address).one_or_none()
@@ -226,23 +107,45 @@ def _seed_tenant(spec: dict) -> Tenant:
     return tenant
 
 
+def _env_value(env_name: str) -> str | None:
+    import os
+
+    return os.getenv(env_name)
+
+
+# Kept for backwards compatibility with any external tooling that imported
+# the old private name.
+_seed_tenant = seed_tenant
+
+
 @click.command("seed")
 @with_appcontext
 def seed_command() -> None:
-    """Create or update the initial tenants."""
-    for spec in TENANT_SPECS:
-        _seed_tenant(spec)
-    db.session.commit()
+    """Production seed entrypoint. Intentionally creates nothing.
+
+    A fresh SmartDesk AI installation has no pre-existing tenants, demo
+    businesses, or vendor sales data. This command exists so that
+    deployment scripts calling ``flask seed`` out of habit don't fail; it
+    prints guidance instead of inserting anything into the database.
+    """
     click.echo(
-        "\nDone. Salon knowledge is intentionally empty until real details are "
-        "supplied.\nSet SALON_TENANT_NAME and the *_WHATSAPP_NUMBER / "
-        "*_VOICE_NUMBER variables, then re-run."
+        "Nothing to seed -- this is a clean installation.\n\n"
+        "To get started:\n"
+        "  1. Sign up through the dashboard.\n"
+        "  2. Confirm your email.\n"
+        "  3. Create your business (self-service, from the dashboard) or "
+        "have an existing platform admin create it for you.\n"
+        "  4. Promote your account to platform administrator:\n"
+        "       flask --app wsgi grant you@yourcompany.com --platform-admin\n\n"
+        "For development/test-only sample tenants, see scripts/dev_seed.py "
+        "-- it is intentionally separate from this command and is never run "
+        "automatically."
     )
 
 
 @click.command("grant")
 @click.argument("email")
-@click.option("--tenant", "tenant_slug", help="Tenant slug, e.g. 10by20")
+@click.option("--tenant", "tenant_slug", help="Tenant slug, e.g. acme-corp")
 @click.option("--role", default="owner", help="viewer | agent | manager | owner")
 @click.option("--platform-admin", is_flag=True, help="Grant SmartDesk admin rights")
 @with_appcontext

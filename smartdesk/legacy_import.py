@@ -7,11 +7,16 @@ so the legacy deployment keeps working untouched if you run this against a
 copy of production before decommissioning it.
 
 Everything created here is explicitly flagged ``is_test_data=True`` and lands
-under the Test Business tenant, never under SmartDesk, 10by20 or the salon —
-per your instruction that production and test data must never mix. This is
-also why it is a separate, explicit command rather than something ``seed``
-runs automatically: importing real customer conversation history is worth a
+under the Test Business tenant only, never under any real customer's
+tenant — production and test data must never mix. This is also why it is a
+separate, explicit command rather than something ``seed`` runs
+automatically: importing real customer conversation history is worth a
 deliberate decision each time, not a side effect of routine setup.
+
+The Test Business tenant is development/test tooling, not part of a normal
+production seed -- create it locally with ``python scripts/dev_seed.py``
+(requires ``DATABASE_URL`` to point at a development database) before
+running this command.
 
 Idempotent: re-running against the same files does not duplicate customers,
 conversations or messages (matched on phone / session key), though it will
@@ -83,7 +88,9 @@ def _get_test_tenant() -> Tenant:
     tenant = Tenant.query.filter_by(slug=TEST_TENANT_SLUG).one_or_none()
     if tenant is None:
         raise click.ClickException(
-            f"No '{TEST_TENANT_SLUG}' tenant found. Run 'flask seed' first."
+            f"No '{TEST_TENANT_SLUG}' tenant found. This is development/test "
+            "tooling: run 'python scripts/dev_seed.py' first (with DATABASE_URL "
+            "pointed at a development database) to create it."
         )
     return tenant
 

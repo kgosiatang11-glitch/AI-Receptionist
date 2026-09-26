@@ -166,9 +166,11 @@ function SignInForm({ onSwitchToSignup, onSwitchToForgot }) {
   );
 }
 
-/* Customer self-signup. Deliberately creates only a SmartDesk account --
- * never a tenant, and never asks for business information. A tenant is
- * linked later by a Super Admin (see smartdesk/api/admin_api.py). */
+/* Customer self-signup. Creates only a SmartDesk login -- never a tenant,
+ * and never asks for business information here. Once the email is
+ * confirmed, the customer sets up their own business themselves from the
+ * dashboard (see NoBusinessPage / POST /signup/business); a platform admin
+ * can alternatively create it for them via smartdesk/api/admin_api.py. */
 function SignUpForm({ onSwitchToSignIn, onSignedUp }) {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -223,8 +225,9 @@ function SignUpForm({ onSwitchToSignIn, onSignedUp }) {
     <Card>
       <h2 style={{ marginBottom: 4 }}>Create your account</h2>
       <p style={{ color: "var(--sd-ink-faint)", fontSize: 12.5, margin: "0 0 18px" }}>
-        Set up your SmartDesk login. A SmartDesk administrator will connect
-        it to your business afterwards.
+        Set up your SmartDesk login. Once you confirm your email, you can
+        set up your own business and get straight to your dashboard --
+        no waiting required.
       </p>
 
       <ErrorNotice message={error} />
