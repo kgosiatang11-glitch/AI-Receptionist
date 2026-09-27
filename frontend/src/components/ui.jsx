@@ -154,10 +154,16 @@ function TenantSwitcher() {
 
 const NAV_GROUPS = [
   {
-    label: "SmartDesk Admin",
+    label: "Control Center",
     adminOnly: true,
     items: [
+      { to: "/admin", label: "Overview", icon: "◈", end: true },
       { to: "/admin/tenants", label: "Tenants", icon: "▥" },
+      { to: "/admin/users", label: "Users", icon: "◐" },
+      { to: "/admin/receptionists", label: "AI Receptionists", icon: "◎" },
+      { to: "/admin/channels", label: "Channels", icon: "✆" },
+      { to: "/admin/analytics", label: "Analytics", icon: "▦" },
+      { to: "/admin/settings", label: "System Settings", icon: "⚒" },
     ],
   },
   {

@@ -14,8 +14,10 @@ from smartdesk.extensions import db
 from smartdesk.models import (
     AUTOMATION_KINDS,
     KNOWLEDGE_SECTIONS,
+    ROLE_AGENT,
     ROLE_MANAGER,
     ROLE_OWNER,
+    ROLE_VIEWER,
     AuditLog,
     Automation,
     Channel,
@@ -153,6 +155,128 @@ def update_business():
     record_audit("business.update", "tenant", tenant.id)
     db.session.commit()
     return jsonify(tenant.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Team / membership management -- owner-only.
+#
+# No invitation email is sent: the person must already have a SmartDesk
+# account (i.e. have signed in via Supabase at least once) before an owner
+# can add them. This mirrors the Super Admin owner-linking flow in
+# smartdesk/api/admin_api.py rather than inventing a second mechanism.
+# ---------------------------------------------------------------------------
+
+MEMBER_ROLES = (ROLE_VIEWER, ROLE_AGENT, ROLE_MANAGER, ROLE_OWNER)
+
+
+def _owner_count(tenant_id) -> int:
+    return Membership.query.filter_by(tenant_id=tenant_id, role=ROLE_OWNER).count()
+
+
+@config_api.post("/business/members")
+@require_tenant(ROLE_OWNER)
+def add_member():
+    tenant = g.tenant
+    payload = request.get_json(silent=True) or {}
+    email = (payload.get("email") or "").strip().lower()
+    role = payload.get("role") or ROLE_VIEWER
+
+    if not email:
+        return jsonify({"error": "email is required"}), 400
+    if role not in MEMBER_ROLES:
+        return jsonify({"error": f"role must be one of {MEMBER_ROLES}"}), 400
+
+    user = User.query.filter_by(email=email).one_or_none()
+    if user is None:
+        # Expected, normal case -- not a server error. They need to sign up
+        # first; no invitation email is faked here.
+        return jsonify(
+            {
+                "error": (
+                    f"No account found for {email}. They need to sign up via "
+                    "the login page first, then you can add them here."
+                )
+            }
+        ), 404
+
+    existing = Membership.query.filter_by(
+        tenant_id=tenant.id, user_id=user.id
+    ).one_or_none()
+    if existing is not None:
+        return jsonify({"error": "This person is already a member of this business."}), 409
+
+    membership = Membership(tenant_id=tenant.id, user_id=user.id, role=role)
+    db.session.add(membership)
+    db.session.flush()
+    record_audit(
+        "member.add", "membership", membership.id, tenant_id=tenant.id,
+        email=email, role=role,
+    )
+    db.session.commit()
+    return jsonify(
+        {**user.to_dict(), "role": membership.role, "membership_id": membership.id}
+    ), 201
+
+
+@config_api.patch("/business/members/<membership_id>")
+@require_tenant(ROLE_OWNER)
+def update_member(membership_id: str):
+    tenant = g.tenant
+    membership = Membership.query.filter_by(
+        id=membership_id, tenant_id=tenant.id
+    ).one_or_none()
+    if membership is None:
+        return jsonify({"error": "Member not found"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    new_role = payload.get("role")
+    if new_role not in MEMBER_ROLES:
+        return jsonify({"error": f"role must be one of {MEMBER_ROLES}"}), 400
+
+    if (
+        membership.role == ROLE_OWNER
+        and new_role != ROLE_OWNER
+        and _owner_count(tenant.id) <= 1
+    ):
+        return jsonify(
+            {
+                "error": (
+                    "This is the last owner of this business. Promote "
+                    "another member to owner before changing this role."
+                )
+            }
+        ), 400
+
+    membership.role = new_role
+    record_audit(
+        "member.update_role", "membership", membership.id, tenant_id=tenant.id,
+        role=new_role,
+    )
+    db.session.commit()
+    return jsonify({"membership_id": membership.id, "role": membership.role})
+
+
+@config_api.delete("/business/members/<membership_id>")
+@require_tenant(ROLE_OWNER)
+def remove_member(membership_id: str):
+    tenant = g.tenant
+    membership = Membership.query.filter_by(
+        id=membership_id, tenant_id=tenant.id
+    ).one_or_none()
+    if membership is None:
+        return jsonify({"error": "Member not found"}), 404
+
+    if membership.role == ROLE_OWNER and _owner_count(tenant.id) <= 1:
+        return jsonify(
+            {"error": "This is the last owner of this business and cannot be removed."}
+        ), 400
+
+    record_audit(
+        "member.remove", "membership", membership.id, tenant_id=tenant.id,
+    )
+    db.session.delete(membership)
+    db.session.commit()
+    return "", 204
 
 
 # ---------------------------------------------------------------------------

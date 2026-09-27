@@ -245,3 +245,168 @@ def platform_overview():
             "total_conversations": total_conversations,
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Platform-wide receptionists / channels -- read-only rollups for the
+# Control Center sidebar. No numbers here are invented: each row is a real
+# ReceptionistProfile/Channel joined back to its tenant.
+# ---------------------------------------------------------------------------
+
+
+@admin_api.get("/admin/receptionists")
+@require_platform_admin
+def list_all_receptionists():
+    rows = (
+        db.session.query(ReceptionistProfile, Tenant)
+        .join(Tenant, Tenant.id == ReceptionistProfile.tenant_id)
+        .order_by(Tenant.name)
+        .all()
+    )
+    return jsonify(
+        {
+            "items": [
+                {
+                    "tenant_id": tenant.id,
+                    "tenant_name": tenant.name,
+                    "display_name": profile.display_name,
+                    "is_active": profile.is_active,
+                }
+                for profile, tenant in rows
+            ]
+        }
+    )
+
+
+@admin_api.get("/admin/channels")
+@require_platform_admin
+def list_all_channels():
+    rows = (
+        db.session.query(Channel, Tenant)
+        .join(Tenant, Tenant.id == Channel.tenant_id)
+        .order_by(Tenant.name, Channel.kind)
+        .all()
+    )
+    return jsonify(
+        {
+            "items": [
+                {
+                    "tenant_id": tenant.id,
+                    "tenant_name": tenant.name,
+                    "kind": channel.kind,
+                    "address": channel.address,
+                    "is_active": channel.is_active,
+                }
+                for channel, tenant in rows
+            ]
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Platform-wide user management
+# ---------------------------------------------------------------------------
+
+
+def _last_owner_tenants(user_id: str) -> list[str]:
+    """Tenant names where this user is the *only* owner.
+
+    Used to block an action (deactivation) that would leave a tenant with
+    no owner at all -- the same protection the tenant-facing member-removal
+    endpoints apply, kept in sync here rather than duplicated ad hoc.
+    """
+    owner_rows = (
+        db.session.query(Tenant.id, Tenant.name)
+        .join(Membership, Membership.tenant_id == Tenant.id)
+        .filter(Membership.user_id == user_id, Membership.role == ROLE_OWNER)
+        .all()
+    )
+    names = []
+    for tenant_id, tenant_name in owner_rows:
+        owner_count = Membership.query.filter_by(
+            tenant_id=tenant_id, role=ROLE_OWNER
+        ).count()
+        if owner_count <= 1:
+            names.append(tenant_name)
+    return names
+
+
+def _user_summary(user: User) -> dict:
+    rows = (
+        db.session.query(Membership, Tenant)
+        .join(Tenant, Tenant.id == Membership.tenant_id)
+        .filter(Membership.user_id == user.id)
+        .order_by(Tenant.name)
+        .all()
+    )
+    return {
+        **user.to_dict(),
+        "is_active": user.is_active,
+        "last_seen_at": user.last_seen_at.isoformat() if user.last_seen_at else None,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "memberships": [
+            {"tenant_id": tenant.id, "tenant_name": tenant.name, "role": membership.role}
+            for membership, tenant in rows
+        ],
+    }
+
+
+@admin_api.get("/admin/users")
+@require_platform_admin
+def list_users():
+    search = (request.args.get("q") or "").strip()
+    query = User.query
+    if search:
+        like = f"%{search}%"
+        query = query.filter(
+            db.or_(User.email.ilike(like), User.full_name.ilike(like))
+        )
+    users = query.order_by(User.created_at.desc()).all()
+    return jsonify({"items": [_user_summary(u) for u in users]})
+
+
+@admin_api.patch("/admin/users/<user_id>")
+@require_platform_admin
+def update_user(user_id: str):
+    user = db.session.get(User, user_id)
+    if user is None:
+        return jsonify({"error": "User not found"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    actor = g.principal.user
+    changes = {}
+
+    if "is_platform_admin" in payload:
+        new_value = bool(payload["is_platform_admin"])
+        if not new_value and user.id == actor.id:
+            return jsonify(
+                {"error": "You cannot remove your own platform administrator access."}
+            ), 400
+        user.is_platform_admin = new_value
+        changes["is_platform_admin"] = new_value
+
+    if "is_active" in payload:
+        new_value = bool(payload["is_active"])
+        if not new_value:
+            if user.id == actor.id:
+                return jsonify({"error": "You cannot deactivate your own account."}), 400
+            blocking = _last_owner_tenants(user.id)
+            if blocking:
+                return jsonify(
+                    {
+                        "error": (
+                            "This user is the only owner of "
+                            f"{', '.join(blocking)}. Assign another owner "
+                            "there first."
+                        )
+                    }
+                ), 400
+        user.is_active = new_value
+        changes["is_active"] = new_value
+
+    if not changes:
+        return jsonify({"error": "Nothing to update"}), 400
+
+    record_audit("user.update", "user", user.id, **changes)
+    db.session.commit()
+    return jsonify(_user_summary(user))

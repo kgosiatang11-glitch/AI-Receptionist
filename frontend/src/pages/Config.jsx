@@ -561,6 +561,131 @@ export function AnalyticsPage() {
 
 /* --------------------------------------------- business, settings, account */
 
+const MEMBER_ROLES = ["viewer", "agent", "manager", "owner"];
+
+function TeamCard({ data, refresh, can }) {
+  const { call } = useSession();
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("viewer");
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState(null);
+  const [rowBusy, setRowBusy] = useState(null);
+  const [rowError, setRowError] = useState(null);
+  const isOwner = can("owner");
+
+  async function addMember(event) {
+    event.preventDefault();
+    if (!email.trim()) return;
+    setAdding(true);
+    setAddError(null);
+    try {
+      await call("/business/members", { method: "POST", body: { email: email.trim(), role } });
+      setEmail("");
+      setRole("viewer");
+      refresh();
+    } catch (err) {
+      setAddError(err.message);
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function changeRole(member, newRole) {
+    setRowBusy(member.membership_id);
+    setRowError(null);
+    try {
+      await call(`/business/members/${member.membership_id}`, {
+        method: "PATCH",
+        body: { role: newRole },
+      });
+      refresh();
+    } catch (err) {
+      setRowError(err.message);
+    } finally {
+      setRowBusy(null);
+    }
+  }
+
+  async function removeMember(member) {
+    setRowBusy(member.membership_id);
+    setRowError(null);
+    try {
+      await call(`/business/members/${member.membership_id}`, { method: "DELETE" });
+      refresh();
+    } catch (err) {
+      setRowError(err.message);
+    } finally {
+      setRowBusy(null);
+    }
+  }
+
+  return (
+    <Card title="Team">
+      <ErrorNotice message={rowError} />
+      {data.members.length === 0 ? (
+        <EmptyState title="No members yet" description="Add someone below." />
+      ) : (
+        <table className="sd-table">
+          <thead><tr><th>Email</th><th>Role</th>{isOwner && <th></th>}</tr></thead>
+          <tbody>
+            {data.members.map((member) => (
+              <tr key={member.membership_id}>
+                <td>{member.email}</td>
+                <td>
+                  {isOwner ? (
+                    <select className="sd-select" value={member.role}
+                      disabled={rowBusy === member.membership_id}
+                      onChange={(e) => changeRole(member, e.target.value)}>
+                      {MEMBER_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                  ) : (
+                    <Badge tone="accent">{member.role}</Badge>
+                  )}
+                </td>
+                {isOwner && (
+                  <td>
+                    <button className="sd-btn is-ghost" disabled={rowBusy === member.membership_id}
+                      onClick={() => removeMember(member)}>
+                      Remove
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {isOwner && (
+        <form onSubmit={addMember} style={{ marginTop: 16 }}>
+          <p className="sd-hint" style={{ marginBottom: 8 }}>
+            They must already have a SmartDesk account (sign up via the login
+            page) before you can add them here.
+          </p>
+          <div className="sd-grid sd-grid-2">
+            <div className="sd-field">
+              <label className="sd-label">Email</label>
+              <input className="sd-input" type="email" value={email} disabled={adding}
+                onChange={(e) => setEmail(e.target.value)} />
+            </div>
+            <div className="sd-field">
+              <label className="sd-label">Role</label>
+              <select className="sd-select" value={role} disabled={adding}
+                onChange={(e) => setRole(e.target.value)}>
+                {MEMBER_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+          </div>
+          <ErrorNotice message={addError} />
+          <button className="sd-btn" disabled={adding || !email.trim()}>
+            {adding ? "Adding…" : "Add member"}
+          </button>
+        </form>
+      )}
+    </Card>
+  );
+}
+
 export function BusinessPage() {
   const { call, can } = useSession();
   const { data, loading, error, refresh } = useApi("/business");
@@ -627,27 +752,7 @@ export function BusinessPage() {
           </div>
         </Card>
 
-        <Card title="Team">
-          {data.members.length === 0 ? (
-            <EmptyState title="No members yet"
-              description="Users are granted access with the flask grant command." />
-          ) : (
-            <table className="sd-table">
-              <thead><tr><th>Email</th><th>Role</th></tr></thead>
-              <tbody>
-                {data.members.map((member) => (
-                  <tr key={member.membership_id}>
-                    <td>{member.email}</td>
-                    <td><Badge tone="accent">{member.role}</Badge></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          <p className="sd-hint">
-            Inviting team members from the dashboard arrives in a later phase.
-          </p>
-        </Card>
+        <TeamCard data={data} refresh={refresh} can={can} />
       </div>
     </>
   );

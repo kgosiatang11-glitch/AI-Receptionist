@@ -1,4 +1,4 @@
-import { Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 import { Sidebar } from "./components/ui.jsx";
 import { useSession } from "./lib/session.jsx";
 import {
@@ -26,6 +26,14 @@ import {
   WhatsAppPage,
 } from "./pages/Config.jsx";
 import { AdminTenantDetailPage, AdminTenantsPage } from "./pages/AdminTenants.jsx";
+import {
+  AdminAnalyticsPage,
+  AdminChannelsPage,
+  AdminOverviewPage,
+  AdminReceptionistsPage,
+  AdminSystemSettingsPage,
+  AdminUsersPage,
+} from "./pages/AdminControlCenter.jsx";
 
 function RequirePlatformAdmin({ children }) {
   const { user } = useSession();
@@ -78,10 +86,23 @@ export default function App() {
   }
 
   // Authenticated and verified, but not a member of any tenant. Showing an
-  // empty dashboard would be misleading, so say so plainly.
-  if (tenants.length === 0) {
+  // empty dashboard would be misleading, so say so plainly -- UNLESS this is
+  // a platform admin, who belongs in the Control Center (a platform-level
+  // area, not a tenant dashboard) regardless of tenant memberships. A newly
+  // promoted admin, or one on a fresh platform with zero tenants yet, must
+  // still be able to reach it.
+  if (tenants.length === 0 && !user?.is_platform_admin) {
     return <NoBusinessPage />;
   }
+
+  // A platform admin with no tenant memberships (e.g. freshly promoted, or
+  // the very first admin on a platform with no tenants yet) has nowhere
+  // useful to land on the tenant-scoped Overview page, so send them to the
+  // Control Center instead.
+  const landingPage =
+    user?.is_platform_admin && tenants.length === 0
+      ? <Navigate to="/admin" replace />
+      : <OverviewPage />;
 
   return (
     <div className="sd-shell">
@@ -89,9 +110,15 @@ export default function App() {
       <main className="sd-main">
         <div className="sd-content">
           <Routes>
-            <Route path="/" element={<OverviewPage />} />
+            <Route path="/" element={landingPage} />
+            <Route path="/admin" element={<RequirePlatformAdmin><AdminOverviewPage /></RequirePlatformAdmin>} />
             <Route path="/admin/tenants" element={<RequirePlatformAdmin><AdminTenantsPage /></RequirePlatformAdmin>} />
             <Route path="/admin/tenants/:id" element={<RequirePlatformAdmin><AdminTenantDetailPage /></RequirePlatformAdmin>} />
+            <Route path="/admin/users" element={<RequirePlatformAdmin><AdminUsersPage /></RequirePlatformAdmin>} />
+            <Route path="/admin/receptionists" element={<RequirePlatformAdmin><AdminReceptionistsPage /></RequirePlatformAdmin>} />
+            <Route path="/admin/channels" element={<RequirePlatformAdmin><AdminChannelsPage /></RequirePlatformAdmin>} />
+            <Route path="/admin/analytics" element={<RequirePlatformAdmin><AdminAnalyticsPage /></RequirePlatformAdmin>} />
+            <Route path="/admin/settings" element={<RequirePlatformAdmin><AdminSystemSettingsPage /></RequirePlatformAdmin>} />
             <Route path="/conversations" element={<ConversationsPage />} />
             <Route path="/customers" element={<CustomersPage />} />
             <Route path="/leads" element={<LeadsPage />} />
@@ -105,7 +132,7 @@ export default function App() {
             <Route path="/business" element={<BusinessPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/account" element={<AccountPage />} />
-            <Route path="*" element={<OverviewPage />} />
+            <Route path="*" element={landingPage} />
           </Routes>
         </div>
       </main>

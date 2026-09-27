@@ -17,7 +17,7 @@ const STATUSES = ["active", "development", "suspended"];
 
 /* --------------------------------------------------------------- overview */
 
-function PlatformStats() {
+export function PlatformStats() {
   const { data, loading, error } = useApi("/admin/overview");
   if (loading) return null;
   if (error) return <ErrorNotice message={error} />;
