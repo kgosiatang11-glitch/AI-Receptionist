@@ -10,6 +10,7 @@ and tenant isolation.
 from __future__ import annotations
 
 import os
+import uuid
 import unittest
 from datetime import date, datetime, time, timedelta, timezone
 from unittest.mock import patch
@@ -578,7 +579,8 @@ class WhatsAppIntegrationTests(BookingEngineTestCase):
         r1 = self.client.post(
             "/whatsapp",
             data={"From": "whatsapp:+26779990001", "To": "whatsapp:+26770000001",
-                  "Body": "Hi, can I book Saturday at 6pm?"},
+                  "Body": "Hi, can I book Saturday at 6pm?",
+                  "MessageSid": f"SM{uuid.uuid4().hex}"},
         )
         self.assertEqual(r1.status_code, 200)
         self.assertIn(b"Just to confirm", r1.data)
@@ -586,7 +588,7 @@ class WhatsAppIntegrationTests(BookingEngineTestCase):
         r2 = self.client.post(
             "/whatsapp",
             data={"From": "whatsapp:+26779990001", "To": "whatsapp:+26770000001",
-                  "Body": "yes"},
+                  "Body": "yes", "MessageSid": f"SM{uuid.uuid4().hex}"},
         )
         self.assertEqual(r2.status_code, 200)
         self.assertIn(b"booked for", r2.data)
@@ -601,7 +603,8 @@ class WhatsAppIntegrationTests(BookingEngineTestCase):
         r = self.client.post(
             "/whatsapp",
             data={"From": "whatsapp:+26779990002", "To": "whatsapp:+26770000001",
-                  "Body": "What are your opening hours?"},
+                  "Body": "What are your opening hours?",
+                  "MessageSid": f"SM{uuid.uuid4().hex}"},
         )
         self.assertEqual(r.status_code, 200)
         self.assertEqual(

@@ -17,6 +17,7 @@ the raw `knowledge` dict lookups were not.
 from __future__ import annotations
 
 import os
+import uuid
 import unittest
 
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -65,7 +66,8 @@ class TenantKnowledgeRoutingTests(MultiTenantTestCase):
     def _send(self, to_address: str, body: str, from_number: str) -> bytes:
         response = self.client.post(
             "/whatsapp",
-            data={"From": f"whatsapp:{from_number}", "To": f"whatsapp:{to_address}", "Body": body},
+            data={"From": f"whatsapp:{from_number}", "To": f"whatsapp:{to_address}", "Body": body,
+                  "MessageSid": f"SM{uuid.uuid4().hex}"},
         )
         self.assertEqual(response.status_code, 200)
         return response.data

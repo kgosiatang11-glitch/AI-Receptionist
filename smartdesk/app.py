@@ -143,14 +143,13 @@ def _register_common(app: Flask) -> None:
             )
             return Response(str(response), status=200, mimetype="application/xml")
         if request.path.startswith("/whatsapp"):
-            from twilio.twiml.messaging_response import MessagingResponse
-
-            response = MessagingResponse()
-            response.message(
-                "Sorry, we could not process that message right now. "
-                "Please try again shortly."
-            )
-            return Response(str(response), status=200, mimetype="application/xml")
+            # An unexpected failure must NOT be reported to Twilio as success.
+            # The transaction above is rolled back (which also releases the
+            # MessageSid idempotency claim), so a Twilio retry of the same
+            # message is processed cleanly.  Retries happen only if the
+            # webhook URL is configured with ``#rc=N&rp=5xx``; otherwise the
+            # failure is at least visible in Twilio's debugger (error 11200).
+            return Response("Internal Server Error", status=500, mimetype="text/plain")
 
         # API callers get a real status code rather than a masked 200.
         return jsonify({"error": "Internal server error"}), 500

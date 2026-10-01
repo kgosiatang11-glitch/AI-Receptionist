@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -146,7 +147,7 @@ class LeadCaptureTests(MultiTenantTestCase):
                 "From": f"whatsapp:{from_number}",
                 "To": f"whatsapp:{to_address}",
                 "Body": body,
-                "MessageSid": "SM_test",
+                "MessageSid": f"SM{uuid.uuid4().hex}",
             },
         )
 
@@ -227,6 +228,7 @@ class UsageLimitTests(MultiTenantTestCase):
                 "From": "whatsapp:+26779998887",
                 "To": "whatsapp:+26770000001",
                 "Body": "Hi, do you have courts available?",
+                "MessageSid": f"SM{uuid.uuid4().hex}",
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -251,6 +253,7 @@ class UsageLimitTests(MultiTenantTestCase):
                 "From": self.padel_conversation.session_key,
                 "To": "whatsapp:+26770000001",
                 "Body": "Following up on my earlier question",
+                "MessageSid": f"SM{uuid.uuid4().hex}",
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -265,6 +268,7 @@ class UsageLimitTests(MultiTenantTestCase):
                 "From": "whatsapp:+26779998886",
                 "To": "whatsapp:+26770000001",
                 "Body": "Hi",
+                "MessageSid": f"SM{uuid.uuid4().hex}",
             },
         )
         self.assertNotIn(b"monthly conversation limit", response.data.lower())

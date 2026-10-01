@@ -111,10 +111,19 @@ def notify_escalation(tenant: Tenant, channel: Channel | None, message: str) -> 
 
 
 def build_engine(
-    tenant: Tenant, conversation: Conversation, channel: Channel | None
+    tenant: Tenant,
+    conversation: Conversation,
+    channel: Channel | None,
+    inbound_message=None,
 ) -> ReceptionistEngine:
-    """Return an engine bound to one tenant and one conversation."""
-    loader, appender = conversation_service.engine_adapters(conversation)
+    """Return an engine bound to one tenant and one conversation.
+
+    ``inbound_message``: pass the already-persisted inbound customer message
+    when the caller owns its persistence (the WhatsApp webhook does).
+    """
+    loader, appender = conversation_service.engine_adapters(
+        conversation, inbound_message=inbound_message
+    )
 
     def escalation_notifier(_reference: str, message: str) -> None:
         conversation_service.mark_needs_human(

@@ -18,6 +18,7 @@ import logging
 import re
 
 from flask import current_app, g
+from sqlalchemy.exc import IntegrityError
 
 from smartdesk.extensions import db
 from smartdesk.models import Channel, Conversation, Customer, Tenant, utcnow
@@ -116,14 +117,24 @@ def get_or_create_customer(tenant: Tenant, phone: str | None) -> Customer | None
         Customer.query.filter_by(tenant_id=tenant.id, phone=address).one_or_none()
     )
     if customer is None:
-        customer = Customer(
-            tenant_id=tenant.id,
-            phone=address,
-            is_test_data=tenant.is_test_data,
-            first_contact_at=utcnow(),
-        )
-        db.session.add(customer)
-        db.session.flush()
+        # Two requests can both miss the SELECT for a brand-new customer (a
+        # Twilio retry, or two quick first messages).  The unique constraint
+        # picks the winner; the loser re-reads the winner's row instead of
+        # failing.  The SAVEPOINT keeps the caller's transaction usable.
+        try:
+            with db.session.begin_nested():
+                customer = Customer(
+                    tenant_id=tenant.id,
+                    phone=address,
+                    is_test_data=tenant.is_test_data,
+                    first_contact_at=utcnow(),
+                )
+                db.session.add(customer)
+                db.session.flush()
+        except IntegrityError:
+            customer = Customer.query.filter_by(
+                tenant_id=tenant.id, phone=address
+            ).one()
     customer.last_contact_at = utcnow()
     return customer
 
@@ -141,16 +152,23 @@ def get_or_create_conversation(
         ).one_or_none()
     )
     if conversation is None:
-        conversation = Conversation(
-            tenant_id=tenant.id,
-            channel_id=channel.id if channel else None,
-            channel_kind=channel_kind,
-            session_key=session_key,
-            customer_id=customer.id if customer else None,
-            is_test_data=tenant.is_test_data,
-        )
-        db.session.add(conversation)
-        db.session.flush()
-    elif conversation.customer_id is None and customer is not None:
+        # Same race as get_or_create_customer: unique (tenant_id, session_key).
+        try:
+            with db.session.begin_nested():
+                conversation = Conversation(
+                    tenant_id=tenant.id,
+                    channel_id=channel.id if channel else None,
+                    channel_kind=channel_kind,
+                    session_key=session_key,
+                    customer_id=customer.id if customer else None,
+                    is_test_data=tenant.is_test_data,
+                )
+                db.session.add(conversation)
+                db.session.flush()
+        except IntegrityError:
+            conversation = Conversation.query.filter_by(
+                tenant_id=tenant.id, session_key=session_key
+            ).one()
+    if conversation.customer_id is None and customer is not None:
         conversation.customer_id = customer.id
     return conversation

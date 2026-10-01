@@ -362,6 +362,26 @@ class Message(TimestampMixin, TenantScoped, db.Model):
         ),
         Index("ix_messages_conversation", "conversation_id", "created_at"),
         Index("ix_messages_tenant", "tenant_id"),
+        # Webhook idempotency: one inbound customer message per provider
+        # message id (Twilio MessageSid) per tenant.  Partial on purpose:
+        #   * role='customer'  -- only inbound rows carry the *inbound* id;
+        #     human_agent rows store the id of an *outbound* send, and
+        #     assistant/event rows carry none;
+        #   * NOT NULL         -- legacy/voice rows without an id stay valid.
+        # Scoped by tenant so one tenant's traffic can never suppress another's.
+        # Must stay identical to migration 0005_inbound_message_idempotency.
+        Index(
+            "uq_messages_inbound_provider_id",
+            "tenant_id",
+            "provider_message_id",
+            unique=True,
+            postgresql_where=sa.text(
+                "role = 'customer' AND provider_message_id IS NOT NULL"
+            ),
+            sqlite_where=sa.text(
+                "role = 'customer' AND provider_message_id IS NOT NULL"
+            ),
+        ),
     )
 
     def to_dict(self) -> dict:

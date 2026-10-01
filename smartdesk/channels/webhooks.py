@@ -13,6 +13,7 @@ customer using another business's facts, so refusing is the safe outcome.
 from __future__ import annotations
 
 import logging
+import re
 
 from flask import Blueprint, Response, current_app, request
 from twilio.twiml.messaging_response import MessagingResponse
@@ -35,6 +36,10 @@ from smartdesk.tenancy import (
 logger = logging.getLogger(__name__)
 
 webhooks = Blueprint("webhooks", __name__)
+
+#: Twilio SIDs are 34 alphanumeric characters; we only insist on something
+#: that is safe to store (provider_message_id is VARCHAR(64)) and log.
+_MESSAGE_SID_RE = re.compile(r"^[\w.-]{1,64}$")
 
 FALLBACK_TEXT = (
     "Sorry, we could not process that message right now. Please try again shortly."
@@ -102,10 +107,39 @@ def _truncate(text: str) -> str:
 @webhooks.route("/whatsapp", methods=["POST"])
 @twilio_webhook
 def whatsapp() -> Response:
+    """Inbound WhatsApp message.
+
+    Flow (one database transaction, committed once at the end):
+
+        signature (decorator) -> channel + tenant -> MessageSid validation
+          -> duplicate fast-path -> customer / conversation
+          -> ATOMIC CLAIM: store the inbound message (unique per MessageSid)
+          -> usage + lead capture -> engine -> store assistant reply -> commit
+
+    HTTP status policy (Twilio only retries what is not 2xx, and only when the
+    webhook URL carries ``#rc=N&rp=5xx`` -- by default it retries connection
+    failures only):
+
+    * 403  bad/missing signature (decorator).  Not retryable, not ours.
+    * 400  signed request with no usable MessageSid.  Malformed; a retry of the
+           same request can never succeed, so we say so instead of guessing.
+    * 200 + empty TwiML  unknown/suspended destination, disabled receptionist,
+           human takeover, and DUPLICATE deliveries.  These are deliberate
+           no-reply outcomes; retrying cannot change them.  A duplicate must
+           never produce a second reply.
+    * 200 + reply  everything answered, including an OpenAI outage -- the
+           engine degrades to a fallback reply and that turn IS recorded, so
+           retrying would only re-bill the model for the same answer.
+    * 500  any unexpected failure (database error, bug).  The transaction is
+           rolled back, which also releases the idempotency claim, so a Twilio
+           retry of the same MessageSid is processed cleanly exactly once.
+           (The previous behaviour -- an apology with HTTP 200 -- told Twilio
+           the message was handled when it was not.)
+    """
     incoming = _truncate(request.values.get("Body", "").strip())
     sender = request.values.get("From", "").strip()
     destination = request.values.get("To", "").strip()
-    message_sid = request.values.get("MessageSid")
+    message_sid = (request.values.get("MessageSid") or "").strip()
 
     if not sender:
         return _twiml("We could not identify your WhatsApp number. Please try again.")
@@ -118,6 +152,23 @@ def whatsapp() -> Response:
 
     tenant = channel.tenant
     bind_tenant(tenant)
+
+    # Every genuine Twilio inbound message has a MessageSid, and it is the
+    # identity we de-duplicate on.  Without one we cannot be idempotent, so a
+    # signed-but-malformed request is refused rather than silently processed.
+    if not _MESSAGE_SID_RE.match(message_sid):
+        logger.warning(
+            "WhatsApp webhook for tenant %s rejected: missing or malformed MessageSid",
+            tenant.slug,
+        )
+        db.session.rollback()
+        return Response("Missing or invalid MessageSid", status=400, mimetype="text/plain")
+
+    # Fast path for the common retry: already recorded, so do nothing at all.
+    # This is only an optimisation -- the unique index below is what makes
+    # concurrent duplicates safe.
+    if conversation_service.find_inbound_message(tenant.id, message_sid) is not None:
+        return _duplicate_response(tenant, message_sid)
 
     profile = get_profile(tenant.id)
     if profile is not None and not profile.is_active:
@@ -132,21 +183,29 @@ def whatsapp() -> Response:
         db.session.commit()
         return _twiml("Please send a message and I will be happy to help.")
 
-    # Checked before the limit gate uses it, and before recording this
-    # message, since the limit only ever applies to brand-new conversations.
-    if _over_monthly_limit(tenant, conversation):
-        conversation_service.append_message(
-            conversation, "customer", incoming, provider_message_id=message_sid
+    # The limit only ever applies to brand-new conversations, so it must be
+    # evaluated BEFORE this call's inbound row exists (afterwards the
+    # conversation is no longer empty).  Evaluating is read-only; acting on it
+    # happens only if we win the claim below.
+    over_limit = _over_monthly_limit(tenant, conversation)
+
+    # ATOMIC CLAIM + the single authoritative write of the inbound message.
+    # Losing the race to an identical MessageSid means the other request owns
+    # (or already finished) this event: do nothing further.
+    try:
+        inbound = conversation_service.store_inbound_message(
+            conversation, incoming, message_sid
         )
+    except conversation_service.DuplicateInboundMessage:
+        return _duplicate_response(tenant, message_sid)
+
+    if over_limit:
         conversation_service.mark_needs_human(
             conversation, "Monthly conversation limit reached"
         )
         db.session.commit()
         return _twiml(LIMIT_REACHED_TEXT)
 
-    conversation_service.append_message(
-        conversation, "customer", incoming, provider_message_id=message_sid
-    )
     conversation_service.record_usage(tenant.id, "message_in", "whatsapp")
 
     persona = build_persona(tenant)
@@ -157,12 +216,31 @@ def whatsapp() -> Response:
         db.session.commit()
         return _twiml()
 
-    engine = build_engine(tenant, conversation, channel)
+    # The webhook owns persistence of the inbound turn; the engine only
+    # persists its own reply (and does not re-show the model this message).
+    engine = build_engine(tenant, conversation, channel, inbound_message=inbound)
     reply = engine.reply(incoming, conversation.session_key, channel="whatsapp",
                          customer_reference=sender)
     conversation_service.record_usage(tenant.id, "message_out", "whatsapp")
     db.session.commit()
     return _twiml(reply)
+
+
+def _duplicate_response(tenant, message_sid: str) -> Response:
+    """Acknowledge a redelivered webhook without touching anything.
+
+    Rolling back discards any incidental writes made before the duplicate was
+    detected (e.g. the channel's last-inbound timestamp), so a duplicate leaves
+    no trace.  The reply for the original delivery was produced by that
+    delivery; answering again would double-message the customer.
+    """
+    db.session.rollback()
+    logger.info(
+        "Duplicate WhatsApp delivery ignored (tenant=%s, MessageSid=%s)",
+        tenant.slug,
+        message_sid,
+    )
+    return _twiml()
 
 
 # ---------------------------------------------------------------------------
