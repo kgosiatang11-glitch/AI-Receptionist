@@ -39,6 +39,31 @@ from smartdesk.services.tenant_provisioning import (
 
 admin_api = Blueprint("admin_api", __name__)
 
+#: Valid range for a tenant's monthly conversation limit when set through the
+#: API.  The schema column is a plain NOT NULL integer with a default of 500
+#: (see Tenant.monthly_conversation_limit), and enforcement currently treats a
+#: stored 0 as "no limit".  The API therefore refuses 0 so that "unlimited"
+#: can never be set by accident or typo; the minimum is 1.  The maximum is
+#: 200x the default -- generous for any real small business, far below the
+#: INTEGER column ceiling, and low enough that a stray extra digit is caught.
+#: Changing either bound is a business decision, not a schema change.
+MIN_MONTHLY_CONVERSATION_LIMIT = 1
+MAX_MONTHLY_CONVERSATION_LIMIT = 100_000
+
+
+def _parse_monthly_conversation_limit(value) -> int:
+    """Return ``value`` as a valid limit or raise ``ValueError`` (message is
+    safe to show to the caller).  Only genuine integers are accepted: no
+    booleans (``True`` is an int in Python), strings, floats or null."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("monthly_conversation_limit must be a whole number")
+    if value < MIN_MONTHLY_CONVERSATION_LIMIT or value > MAX_MONTHLY_CONVERSATION_LIMIT:
+        raise ValueError(
+            "monthly_conversation_limit must be between "
+            f"{MIN_MONTHLY_CONVERSATION_LIMIT} and {MAX_MONTHLY_CONVERSATION_LIMIT}"
+        )
+    return value
+
 
 def _owner_linked(tenant_id: str) -> dict | None:
     """Derive link status from Membership -- no separate state to drift out
@@ -144,6 +169,18 @@ def update_tenant(tenant_id: str):
 
     payload = request.get_json(silent=True) or {}
 
+    # Never silently ignored, never applied without validation + a dedicated
+    # audit entry: the limit has its own endpoint (below).
+    if "monthly_conversation_limit" in payload:
+        return jsonify(
+            {
+                "error": (
+                    "monthly_conversation_limit is not changed here; use "
+                    "PATCH /admin/tenants/<tenant_id>/monthly-limit"
+                )
+            }
+        ), 400
+
     if "business_name" in payload:
         name = (payload["business_name"] or "").strip()
         if not name:
@@ -167,6 +204,51 @@ def update_tenant(tenant_id: str):
     record_audit("tenant.update", "tenant", tenant.id)
     db.session.commit()
     return jsonify(_tenant_summary(tenant))
+
+
+@admin_api.patch("/admin/tenants/<tenant_id>/monthly-limit")
+@require_platform_admin
+def update_tenant_monthly_limit(tenant_id: str):
+    """Set one tenant's monthly conversation limit (platform admin only).
+
+    The tenant is addressed by id in the URL and nothing in the body can
+    redirect the change to another tenant.  The old and new values are
+    recorded in the audit log.
+    """
+    tenant = db.session.get(Tenant, tenant_id)
+    if tenant is None:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or "monthly_conversation_limit" not in payload:
+        return jsonify({"error": "monthly_conversation_limit is required"}), 400
+
+    try:
+        new_limit = _parse_monthly_conversation_limit(
+            payload["monthly_conversation_limit"]
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    old_limit = tenant.monthly_conversation_limit
+    tenant.monthly_conversation_limit = new_limit
+    record_audit(
+        "tenant.monthly_limit.update",
+        "tenant",
+        tenant.id,
+        tenant_id=tenant.id,
+        old_monthly_conversation_limit=old_limit,
+        new_monthly_conversation_limit=new_limit,
+    )
+    db.session.commit()
+    return jsonify(
+        {
+            "id": tenant.id,
+            "slug": tenant.slug,
+            "monthly_conversation_limit": new_limit,
+            "previous_monthly_conversation_limit": old_limit,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

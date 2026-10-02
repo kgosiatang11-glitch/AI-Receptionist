@@ -137,21 +137,41 @@ def get_business():
     )
 
 
+#: Fields a tenant owner may change on their own business.  This is an
+#: allow-list: anything else in the payload is never written to the tenant.
+OWNER_EDITABLE_BUSINESS_FIELDS = (
+    "name",
+    "timezone",
+    "escalation_whatsapp",
+    "escalation_email",
+)
+
+
 @config_api.patch("/business")
 @require_tenant(ROLE_OWNER)
 def update_business():
     tenant = g.tenant
     payload = request.get_json(silent=True) or {}
-    for field in ("name", "timezone", "escalation_whatsapp", "escalation_email"):
+
+    # The monthly conversation limit is a plan/cost control owned by the
+    # platform, not by the tenant.  An owner who could raise (or zero) it
+    # could remove their own spending cap, so the request is refused outright
+    # -- before ANY field is applied -- rather than silently ignored.  It is
+    # changed only through PATCH /admin/tenants/<id>/monthly-limit, which
+    # requires platform-admin access.
+    if "monthly_conversation_limit" in payload:
+        return jsonify(
+            {
+                "error": (
+                    "monthly_conversation_limit can only be changed by SmartDesk "
+                    "support. Contact SmartDesk to change your plan limit."
+                )
+            }
+        ), 403
+
+    for field in OWNER_EDITABLE_BUSINESS_FIELDS:
         if field in payload:
             setattr(tenant, field, payload[field])
-    if "monthly_conversation_limit" in payload:
-        try:
-            tenant.monthly_conversation_limit = max(
-                0, int(payload["monthly_conversation_limit"])
-            )
-        except (TypeError, ValueError):
-            return jsonify({"error": "monthly_conversation_limit must be a number"}), 400
     record_audit("business.update", "tenant", tenant.id)
     db.session.commit()
     return jsonify(tenant.to_dict())
