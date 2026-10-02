@@ -60,7 +60,7 @@ class FakeOpenAI:
         outer = self
 
         class _Completions:
-            def create(self, model, messages):  # noqa: ARG002 - mimics SDK
+            def create(self, model, messages, **kwargs):  # noqa: ARG002 - mimics SDK
                 outer.calls.append(messages)
                 return SimpleNamespace(
                     choices=[SimpleNamespace(message=SimpleNamespace(content="Fake AI reply."))]

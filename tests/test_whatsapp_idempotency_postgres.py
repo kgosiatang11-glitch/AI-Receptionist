@@ -129,7 +129,7 @@ class PostgresWebhookTestCase(unittest.TestCase):
             return real_reply(engine, *args, **kwargs)
 
         class _Completions:
-            def create(self, model, messages):  # noqa: ARG002
+            def create(self, model, messages, **kwargs):  # noqa: ARG002
                 with outer._lock:
                     outer.openai_calls += 1
                 return SimpleNamespace(

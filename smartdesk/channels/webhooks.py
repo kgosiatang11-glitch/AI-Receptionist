@@ -221,7 +221,11 @@ def whatsapp() -> Response:
     engine = build_engine(tenant, conversation, channel, inbound_message=inbound)
     reply = engine.reply(incoming, conversation.session_key, channel="whatsapp",
                          customer_reference=sender)
-    conversation_service.record_usage(tenant.id, "message_out", "whatsapp")
+    # Token usage rides in the existing UsageEvent.meta JSON (no schema
+    # change). Absent when no OpenAI call was made; token values are None
+    # when OpenAI returned no usage -- never estimated.
+    usage_meta = {"openai_usage": engine.last_usage} if engine.last_usage else {}
+    conversation_service.record_usage(tenant.id, "message_out", "whatsapp", **usage_meta)
     db.session.commit()
     return _twiml(reply)
 

@@ -9,6 +9,16 @@ from __future__ import annotations
 
 import os
 
+from ai.limits import (
+    DEFAULT_MAX_HISTORY_MESSAGES,
+    DEFAULT_MAX_KNOWLEDGE_CHARS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    HISTORY_MESSAGES_CEILING,
+    KNOWLEDGE_CHARS_CEILING,
+    OUTPUT_TOKENS_CEILING,
+    safe_limit,
+)
+
 
 def _bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -22,6 +32,15 @@ def _int(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
+
+
+def _limit(name: str, default: int, ceiling: int) -> int:
+    """Read a cost limit from the environment; invalid values use the default.
+
+    Unset -> default. Non-numeric, zero, negative or above ``ceiling`` ->
+    default plus a logged warning. Never unlimited. See ``ai/limits.py``.
+    """
+    return safe_limit(os.getenv(name), default, ceiling, name)
 
 
 class Config:
@@ -73,7 +92,16 @@ class Config:
 
     # --- Guardrails ------------------------------------------------------
     MAX_INBOUND_MESSAGE_CHARS = _int("MAX_INBOUND_MESSAGE_CHARS", 1500)
-    MAX_CONVERSATION_HISTORY = _int("MAX_CONVERSATION_HISTORY", 20)
+    # Cost containment for every OpenAI request (documented in ai/limits.py).
+    MAX_CONVERSATION_HISTORY = _limit(
+        "MAX_CONVERSATION_HISTORY", DEFAULT_MAX_HISTORY_MESSAGES, HISTORY_MESSAGES_CEILING
+    )
+    RECEPTIONIST_MAX_OUTPUT_TOKENS = _limit(
+        "RECEPTIONIST_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS, OUTPUT_TOKENS_CEILING
+    )
+    RECEPTIONIST_MAX_KNOWLEDGE_CHARS = _limit(
+        "RECEPTIONIST_MAX_KNOWLEDGE_CHARS", DEFAULT_MAX_KNOWLEDGE_CHARS, KNOWLEDGE_CHARS_CEILING
+    )
     DEFAULT_MONTHLY_CONVERSATION_LIMIT = _int("MONTHLY_CONVERSATION_LIMIT", 500)
 
     # --- Legacy single-tenant fallback ----------------------------------

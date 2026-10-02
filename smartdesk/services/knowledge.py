@@ -79,9 +79,13 @@ def knowledge_dict(tenant_id: str) -> dict:
     (``greeting``, ``pricing``, ``business_hours``, ``features``) so the
     deterministic reply paths keep working unchanged.
     """
-    documents = KnowledgeDocument.query.filter_by(
-        tenant_id=tenant_id, is_published=True
-    ).all()
+    # Ordered so the serialised prompt (and therefore any size truncation of
+    # it) is reproducible; an unordered query may return rows in any order.
+    documents = (
+        KnowledgeDocument.query.filter_by(tenant_id=tenant_id, is_published=True)
+        .order_by(KnowledgeDocument.section)
+        .all()
+    )
 
     knowledge: dict = {}
     for doc in documents:

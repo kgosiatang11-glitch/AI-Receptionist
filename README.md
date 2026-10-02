@@ -67,6 +67,24 @@ TWILIO_VOICE_LANGUAGE=en-US
 VOICE_MAX_SILENCE_REPROMPTS=2
 ```
 
+### OpenAI cost limits
+
+Each OpenAI request is bounded on three axes. Values must be whole numbers in
+range; anything missing, non-numeric, zero, negative or above the maximum falls
+back to the default (with a logged warning) and never becomes unlimited. The
+shared definitions and rationale live in `ai/limits.py`.
+
+| Variable | Default (max) | Controls |
+| --- | --- | --- |
+| `RECEPTIONIST_MAX_OUTPUT_TOKENS` | 400 (2000) | Max tokens in the model's reply (`max_completion_tokens`). 400 tokens is about 1,600 characters, the WhatsApp body limit. If you switch `OPENAI_MODEL` to a reasoning model, reasoning tokens count against this cap. |
+| `MAX_CONVERSATION_HISTORY` | 20 (50) | Max prior messages sent; newest kept. The system prompt and current customer message are always sent in addition. |
+| `RECEPTIONIST_MAX_KNOWLEDGE_CHARS` | 12000 (60000) | Max characters of tenant knowledge in the prompt. Only what is sent is cut; stored knowledge is untouched. |
+
+Token usage (`prompt_tokens`, `completion_tokens`, `total_tokens`) reported by
+OpenAI is stored under `openai_usage` in the `meta` of the WhatsApp
+`message_out` usage event. If OpenAI returns no usage the values are `null`;
+counts are never estimated.
+
 ## Local Testing
 - Start the Flask app with `python app.py`
 - Expose it using ngrok or a similar tunnel

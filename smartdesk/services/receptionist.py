@@ -146,4 +146,7 @@ def build_engine(
         knowledge_provider=lambda: knowledge_context(tenant.id),
         knowledge_dict_provider=lambda: knowledge_dict(tenant.id),
         booking_handler=booking_handler,
+        max_output_tokens=current_app.config.get("RECEPTIONIST_MAX_OUTPUT_TOKENS"),
+        max_history_messages=current_app.config.get("MAX_CONVERSATION_HISTORY"),
+        max_knowledge_chars=current_app.config.get("RECEPTIONIST_MAX_KNOWLEDGE_CHARS"),
     )

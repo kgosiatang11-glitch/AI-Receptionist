@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 
 from flask import current_app
+
+from ai.limits import DEFAULT_MAX_HISTORY_MESSAGES, HISTORY_MESSAGES_CEILING, safe_limit
 from sqlalchemy.exc import IntegrityError
 
 from smartdesk.extensions import db
@@ -37,7 +39,14 @@ def load_history(
     own prompt, so including it here too would show the model the same
     customer message twice.
     """
-    limit = limit or current_app.config.get("MAX_CONVERSATION_HISTORY", 20)
+    # Validated: a zero/negative/garbage value must never reach the query
+    # (a negative LIMIT is "no limit" on SQLite).
+    limit = safe_limit(
+        limit if limit is not None else current_app.config.get("MAX_CONVERSATION_HISTORY"),
+        DEFAULT_MAX_HISTORY_MESSAGES,
+        HISTORY_MESSAGES_CEILING,
+        "MAX_CONVERSATION_HISTORY",
+    )
     query = Message.query.filter(
         Message.conversation_id == conversation.id,
         Message.tenant_id == conversation.tenant_id,

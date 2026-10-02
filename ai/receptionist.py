@@ -6,6 +6,16 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from ai.limits import (
+    DEFAULT_MAX_HISTORY_MESSAGES,
+    DEFAULT_MAX_KNOWLEDGE_CHARS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    HISTORY_MESSAGES_CEILING,
+    KNOWLEDGE_CHARS_CEILING,
+    OUTPUT_TOKENS_CEILING,
+    bound_knowledge,
+    safe_limit,
+)
 from ai.persona import LEGACY_SMARTDESK_PERSONA, TenantPersona
 from intent_router import detect_intent, route_message
 from knowledge.business_knowledge import business_knowledge_context, get_business_knowledge
@@ -88,6 +98,9 @@ class ReceptionistEngine:
         knowledge_provider: KnowledgeProvider | None = None,
         knowledge_dict_provider: KnowledgeDictProvider | None = None,
         booking_handler: BookingHandler | None = None,
+        max_output_tokens: int | None = None,
+        max_history_messages: int | None = None,
+        max_knowledge_chars: int | None = None,
     ) -> None:
         self._client_provider = client_provider
         self._model = model
@@ -106,6 +119,25 @@ class ReceptionistEngine:
         # None by default: existing single-tenant deployments and any test
         # that constructs the engine directly get exactly the old behaviour.
         self._booking_handler = booking_handler
+        # Cost-containment limits (see ai/limits.py). None / invalid values
+        # fall back to the documented defaults -- never to "unlimited".
+        self._max_output_tokens = safe_limit(
+            max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS, OUTPUT_TOKENS_CEILING,
+            "max_output_tokens",
+        )
+        self._max_history_messages = safe_limit(
+            max_history_messages, DEFAULT_MAX_HISTORY_MESSAGES, HISTORY_MESSAGES_CEILING,
+            "max_history_messages",
+        )
+        self._max_knowledge_chars = safe_limit(
+            max_knowledge_chars, DEFAULT_MAX_KNOWLEDGE_CHARS, KNOWLEDGE_CHARS_CEILING,
+            "max_knowledge_chars",
+        )
+        #: Token usage reported by OpenAI for the most recent reply, or None
+        #: if no OpenAI call completed. When a call completed but the response
+        #: carried no usage, the dict is present with None token values --
+        #: counts are never estimated.
+        self.last_usage: dict[str, Any] | None = None
 
     @property
     def persona(self) -> TenantPersona:
@@ -119,6 +151,7 @@ class ReceptionistEngine:
         customer_reference: str | None = None,
     ) -> str:
         """Produce one answer and retain it only in this customer's session."""
+        self.last_usage = None
         persona = self.persona
         local_greeting = self._setswana_greeting(message, persona)
         if local_greeting:
@@ -164,6 +197,7 @@ class ReceptionistEngine:
 
     def generate_openai_reply(self, message: str, session_id: str, channel: str) -> str:
         """Generate an OpenAI reply directly for compatibility and focused tests."""
+        self.last_usage = None
         return self._generate_openai_reply(message, session_id, channel)
 
     def _generate_openai_reply(self, message: str, session_id: str, channel: str) -> str:
@@ -176,7 +210,11 @@ class ReceptionistEngine:
             )
 
         intent, info = detect_intent(message)
-        history = self._history_loader(session_id)
+        # Bound enforced here, immediately before the request is built, so it
+        # holds regardless of what the injected loader returned. Newest
+        # messages are kept; the current customer message is appended below
+        # and is never part of the trimmed history.
+        history = self._bound_history(self._history_loader(session_id))
         channel_style = (
             "Voice response: keep it concise and natural to hear."
             if channel == "voice"
@@ -184,7 +222,7 @@ class ReceptionistEngine:
         )
         user_prompt = "\n\n".join(
             [
-                f"BUSINESS KNOWLEDGE (verified):\n{self._knowledge_provider()}",
+                f"BUSINESS KNOWLEDGE (verified):\n{self._bounded_knowledge()}",
                 f"Customer message: {message}",
                 f"Detected intent: {intent}",
                 f"Detected business type: {info.get('business', 'not specified')}",
@@ -200,7 +238,14 @@ class ReceptionistEngine:
         messages.append({"role": "user", "content": user_prompt})
 
         try:
-            response = client.chat.completions.create(model=self._model, messages=messages)
+            response = client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                max_completion_tokens=self._max_output_tokens,
+            )
+            # Capture usage before touching the content: the call was billed
+            # even if the reply turns out to be unusable.
+            self.last_usage = self._extract_usage(response)
             reply = response.choices[0].message.content.strip()
         except Exception:
             logging.getLogger(__name__).exception("OpenAI reply generation failed")
@@ -209,6 +254,36 @@ class ReceptionistEngine:
                 "Please contact the business directly for help."
             )
         return self._record_turn(session_id, message, reply)
+
+    def _bound_history(self, history: list[dict[str, str]]) -> list[dict[str, str]]:
+        history = list(history or [])
+        return history[-self._max_history_messages:]
+
+    def _bounded_knowledge(self) -> str:
+        return bound_knowledge(self._knowledge_provider(), self._max_knowledge_chars)
+
+    def _extract_usage(self, response: Any) -> dict[str, Any]:
+        """Read token usage from the response; unknown values stay None."""
+        usage = getattr(response, "usage", None)
+
+        def count(name: str) -> int | None:
+            value = getattr(usage, name, None) if usage is not None else None
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                return value
+            return None
+
+        captured = {
+            "model": self._model,
+            "prompt_tokens": count("prompt_tokens"),
+            "completion_tokens": count("completion_tokens"),
+            "total_tokens": count("total_tokens"),
+        }
+        logging.getLogger(__name__).info(
+            "OpenAI usage model=%s prompt=%s completion=%s total=%s",
+            captured["model"], captured["prompt_tokens"],
+            captured["completion_tokens"], captured["total_tokens"],
+        )
+        return captured
 
     def _record_turn(self, session_id: str, message: str, reply: str) -> str:
         self._history_appender(session_id, "user", message)
