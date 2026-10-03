@@ -464,6 +464,11 @@ class MigrationTests(PostgresWebhookTestCase):
     def test_upgrade_is_idempotent_and_downgrade_round_trips(self):
         from flask_migrate import downgrade
 
+        # End setUp's open transaction first.  Downgrading to 0004 now also
+        # reverts 0006 (DROP TABLE on tables that reference ``tenants``), which
+        # needs a lock this session's idle-in-transaction read of ``tenants``
+        # would otherwise block forever.
+        db.session.remove()
         downgrade(directory=MIGRATIONS_DIR, revision="0004_tenant_admin_fields")
         self._upgrade()
         self._upgrade()                                   # already at head: no-op

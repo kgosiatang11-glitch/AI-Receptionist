@@ -45,6 +45,13 @@ HISTORY_MESSAGES_CEILING = 50
 DEFAULT_MAX_KNOWLEDGE_CHARS = 12000
 KNOWLEDGE_CHARS_CEILING = 60000
 
+# Stale usage-reservation recovery (smartdesk/services/usage.py). A reservation
+# is held only while one OpenAI call is in flight (OPENAI_TIMEOUT_SECONDS
+# defaults to 10), so 10 minutes is far beyond any legitimate call yet returns
+# leaked capacity quickly.  Must stay well above the OpenAI timeout.
+DEFAULT_USAGE_RESERVATION_STALE_SECONDS = 600
+USAGE_RESERVATION_STALE_SECONDS_CEILING = 86400
+
 KNOWLEDGE_TRUNCATION_NOTICE = "\n[... business knowledge truncated: size limit reached ...]"
 
 

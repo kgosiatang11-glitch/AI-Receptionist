@@ -80,6 +80,22 @@ shared definitions and rationale live in `ai/limits.py`.
 | `MAX_CONVERSATION_HISTORY` | 20 (50) | Max prior messages sent; newest kept. The system prompt and current customer message are always sent in addition. |
 | `RECEPTIONIST_MAX_KNOWLEDGE_CHARS` | 12000 (60000) | Max characters of tenant knowledge in the prompt. Only what is sent is cut; stored knowledge is untouched. |
 
+### Atomic monthly AI-usage reservations (foundation, not yet wired in)
+
+Migration `0006_usage_reservations` adds `tenant_usage_periods` (one row per
+tenant per UTC month, `used_units`) and `usage_reservations` (one row per
+OpenAI-requiring reply: `reserved` -> `committed` | `released`), both with
+row-level security. `smartdesk/services/usage.py` reserves capacity with a single
+conditional UPDATE so PostgreSQL, not Python, enforces
+`used_units + n <= Tenant.monthly_conversation_limit` under concurrency; limits
+of zero or below mean no capacity, never unlimited. Retries are idempotent via
+`UNIQUE (tenant_id, kind, idempotency_key)`. Nothing in WhatsApp/Voice calls the
+service yet and the existing monthly limit check is unchanged. Reservations must
+be made in their own short transaction, never held across the OpenAI call.
+`USAGE_RESERVATION_STALE_SECONDS` (default 600) sets when
+`release_stale_reservations` may reclaim an abandoned reservation; nothing runs
+it on a schedule yet.
+
 Token usage (`prompt_tokens`, `completion_tokens`, `total_tokens`) reported by
 OpenAI is stored under `openai_usage` in the `meta` of the WhatsApp
 `message_out` usage event. If OpenAI returns no usage the values are `null`;

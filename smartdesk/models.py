@@ -23,6 +23,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -759,6 +760,110 @@ class UsageEvent(TimestampMixin, TenantScoped, db.Model):
 
     __table_args__ = (
         Index("ix_usage_tenant_kind_time", "tenant_id", "kind", "occurred_at"),
+    )
+
+
+RESERVATION_STATUSES = ("reserved", "committed", "released")
+
+
+class TenantUsagePeriod(TimestampMixin, TenantScoped, db.Model):
+    """One tenant's AI-reply usage for one UTC calendar month (Phase 3.3A).
+
+    ``used_units`` counts reservations that are currently ``reserved`` or
+    ``committed``.  It is only ever changed by the conditional UPDATEs in
+    ``smartdesk.services.usage`` so the database -- not Python -- decides
+    whether capacity remains.  The limit itself stays on
+    ``Tenant.monthly_conversation_limit``.
+    """
+
+    __tablename__ = "tenant_usage_periods"
+
+    id = db.Column(UUIDType, primary_key=True, default=_uuid)
+    tenant_id = db.Column(
+        UUIDType, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    period_start = db.Column(DateTime(timezone=True), nullable=False)
+    period_end = db.Column(DateTime(timezone=True), nullable=False)
+    used_units = db.Column(Integer, nullable=False, default=0, server_default="0")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "period_start", "period_end", name="uq_usage_period_tenant_window"
+        ),
+        # Lets usage_reservations reference (tenant_id, id) so a reservation can
+        # never point at another tenant's period.
+        UniqueConstraint("tenant_id", "id", name="uq_usage_period_tenant_id"),
+        CheckConstraint("used_units >= 0", name="ck_usage_period_used_nonneg"),
+        CheckConstraint("period_start < period_end", name="ck_usage_period_window"),
+    )
+
+
+class UsageReservation(TimestampMixin, TenantScoped, db.Model):
+    """One reserved unit of AI capacity (one OpenAI-requiring reply).
+
+    Lifecycle: ``reserved`` -> ``committed`` (OpenAI succeeded, token counts
+    recorded) or ``reserved`` -> ``released`` (OpenAI failed / abandoned,
+    capacity returned).  ``committed`` and ``released`` are terminal.
+    ``(tenant_id, kind, idempotency_key)`` is unique, enforced by the database.
+    """
+
+    __tablename__ = "usage_reservations"
+
+    id = db.Column(UUIDType, primary_key=True, default=_uuid)
+    tenant_id = db.Column(
+        UUIDType, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    usage_period_id = db.Column(UUIDType, nullable=False)
+    kind = db.Column(String(40), nullable=False)
+    idempotency_key = db.Column(String(128), nullable=False)
+    units = db.Column(Integer, nullable=False, default=1, server_default="1")
+    status = db.Column(String(16), nullable=False, default="reserved", server_default="reserved")
+    reserved_at = db.Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    committed_at = db.Column(DateTime(timezone=True))
+    released_at = db.Column(DateTime(timezone=True))
+    prompt_tokens = db.Column(Integer)
+    completion_tokens = db.Column(Integer)
+    total_tokens = db.Column(Integer)
+    # Named ``meta`` like every other JSON column here ("metadata" is reserved
+    # by SQLAlchemy's declarative base).
+    meta = db.Column(JSONType, nullable=False, default=dict)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "usage_period_id"],
+            ["tenant_usage_periods.tenant_id", "tenant_usage_periods.id"],
+            ondelete="CASCADE",
+            name="fk_usage_reservations_period_tenant",
+        ),
+        UniqueConstraint(
+            "tenant_id", "kind", "idempotency_key", name="uq_usage_reservation_idempotency"
+        ),
+        CheckConstraint("units > 0", name="ck_usage_reservation_units_positive"),
+        CheckConstraint(
+            "status IN ('reserved', 'committed', 'released')",
+            name="ck_usage_reservation_status",
+        ),
+        CheckConstraint(
+            "(status = 'reserved' AND committed_at IS NULL AND released_at IS NULL)"
+            " OR (status = 'committed' AND committed_at IS NOT NULL AND released_at IS NULL)"
+            " OR (status = 'released' AND released_at IS NOT NULL AND committed_at IS NULL)",
+            name="ck_usage_reservation_status_timestamps",
+        ),
+        CheckConstraint(
+            "(prompt_tokens IS NULL OR prompt_tokens >= 0)"
+            " AND (completion_tokens IS NULL OR completion_tokens >= 0)"
+            " AND (total_tokens IS NULL OR total_tokens >= 0)",
+            name="ck_usage_reservation_tokens_nonneg",
+        ),
+        # Serves release_stale_reservations: only unfinished rows are indexed.
+        Index(
+            "ix_usage_reservations_stale",
+            "reserved_at",
+            postgresql_where=sa.text("status = 'reserved'"),
+            sqlite_where=sa.text("status = 'reserved'"),
+        ),
+        # Serves FK lookups / per-period listings.
+        Index("ix_usage_reservations_period", "usage_period_id"),
     )
 
 
