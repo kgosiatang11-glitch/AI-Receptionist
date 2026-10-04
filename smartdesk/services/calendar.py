@@ -32,6 +32,7 @@ from flask import current_app
 
 from smartdesk.extensions import db
 from smartdesk.models import Booking, CalendarConnection, Tenant
+from smartdesk.tenancy import tenant_access_denial, tenant_is_active_now
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,13 @@ def complete_oauth_callback(code: str, state: str) -> CalendarConnection:
     payload = verify_state(state)  # raises InvalidOAuthState if tampered/expired
     tenant_id = payload["tenant_id"]
     user_id = payload["user_id"]
+
+    # This route is reached by Google's browser redirect, not through
+    # ``require_tenant``, so it needs its own (same-policy) suspension check:
+    # a tenant suspended after starting the flow must not gain a calendar
+    # connection.  Nothing is exchanged or stored.
+    if tenant_access_denial(db.session.get(Tenant, tenant_id)) is not None:
+        raise CalendarError("This business account is not active")
 
     from google_auth_oauthlib.flow import Flow
 
@@ -275,6 +283,8 @@ def create_event_for_booking(tenant: Tenant, booking: Booking) -> str:
     unsynced, since a booking that looks confirmed in the dashboard but
     isn't on the actual calendar is worse than an explicit failure.
     """
+    if not tenant_is_active_now(tenant.id):  # C6: re-check right before the external write
+        raise CalendarError("This business account is not active")
     connection = get_connection(tenant.id)
     if connection is None:
         raise CalendarError("This business has not connected a calendar yet")
@@ -311,6 +321,8 @@ def create_event_for_booking(tenant: Tenant, booking: Booking) -> str:
 
 
 def cancel_event_for_booking(tenant: Tenant, booking: Booking) -> None:
+    if not tenant_is_active_now(tenant.id):  # C6: no external calendar write when inactive
+        return
     connection = get_connection(tenant.id)
     if connection is None or booking.external_system != "google_calendar":
         return

@@ -119,7 +119,10 @@ def _register_common(app: Flask) -> None:
     @app.errorhandler(AuthError)
     def _auth_error(error: AuthError):
         # Never leak whether a tenant exists; the message is already generic.
-        return jsonify({"error": error.message}), error.status
+        body = {"error": error.message}
+        if error.code:
+            body["code"] = error.code
+        return jsonify(body), error.status
 
     @app.errorhandler(404)
     def _not_found(_error):

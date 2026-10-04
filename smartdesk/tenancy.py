@@ -25,6 +25,56 @@ from smartdesk.models import Channel, Conversation, Customer, Tenant, utcnow
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Tenant status policy (Phase 3.4 / C6) -- the ONE place that decides whether a
+# tenant may use the application.
+#
+#   active       normal production tenant                        -> allowed
+#   development  non-production tenant (seeds, demos, dev work)  -> allowed
+#   suspended    platform admin has suspended the tenant         -> denied
+#   anything else (unknown / NULL / missing tenant)              -> denied
+#
+# The default is DENY: only the statuses listed in ``ACTIVE_STATUSES`` pass, so
+# a status that cannot be read or recognised never counts as active.  Platform
+# administrators are exempt from this at the API layer (see
+# ``security.rbac.require_tenant``) so they can still inspect and reactivate.
+# ---------------------------------------------------------------------------
+
+ACTIVE_STATUSES = ("active", "development")
+TENANT_SUSPENDED = "tenant_suspended"
+TENANT_UNAVAILABLE = "tenant_unavailable"
+TENANT_DENIED_MESSAGES = {
+    TENANT_SUSPENDED: "This business account is suspended",
+    TENANT_UNAVAILABLE: "This business account is unavailable",
+}
+
+
+def tenant_access_denial(tenant: Tenant | None) -> str | None:
+    """Return ``None`` if ``tenant`` may use the application, else a stable code."""
+    if tenant is None:
+        return TENANT_UNAVAILABLE
+    status = getattr(tenant, "status", None)
+    if status in ACTIVE_STATUSES:
+        return None
+    if status == "suspended":
+        return TENANT_SUSPENDED
+    return TENANT_UNAVAILABLE
+
+
+def tenant_is_active_now(tenant_id: str) -> bool:
+    """Fresh, uncached status read for tenant-originated side effects.
+
+    Request-start checks can be stale by the time a slow outbound action runs
+    (a platform admin may suspend the tenant in between).  This reads the
+    status column straight from the database -- not the session's identity
+    map -- so outbound WhatsApp sends and calendar writes re-confirm it right
+    before the external call.  It opens no new transaction of its own.
+    """
+    status = db.session.execute(
+        db.select(Tenant.status).where(Tenant.id == tenant_id)
+    ).scalar_one_or_none()
+    return status in ACTIVE_STATUSES
+
 
 class TenantResolutionError(Exception):
     """Raised when inbound traffic cannot be attributed to a tenant."""
@@ -64,7 +114,9 @@ def resolve_channel(kind: str, destination: str) -> Channel:
         )
 
     tenant = db.session.get(Tenant, channel.tenant_id)
-    if tenant is None or tenant.status == "suspended":
+    # Same central policy as the dashboard API: suspended AND unrecognised
+    # statuses are refused, before any write (including last_inbound_at below).
+    if tenant_access_denial(tenant) is not None:
         raise TenantResolutionError(f"Tenant for {address} is unavailable")
 
     channel.last_inbound_at = utcnow()

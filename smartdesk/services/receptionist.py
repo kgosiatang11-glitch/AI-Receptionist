@@ -19,6 +19,7 @@ from smartdesk.models import Channel, Conversation, Tenant
 from smartdesk.services import conversations as conversation_service
 from smartdesk.services.booking_engine import handle_booking_message
 from smartdesk.services.knowledge import build_persona, knowledge_context, knowledge_dict
+from smartdesk.tenancy import tenant_is_active_now
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,12 @@ def send_whatsapp_message(channel: Channel, to_address: str, body: str) -> str:
     message primitive, so takeover replies are only supported on WhatsApp for
     now — the API surfaces this rather than silently failing.
     """
+    # Defence in depth (C6): the dashboard route is already behind the
+    # suspension guard, but a send can be seconds behind that check.  Re-read
+    # the status right before the provider call so a tenant suspended in the
+    # meantime sends nothing.
+    if not tenant_is_active_now(channel.tenant_id):
+        raise OutboundSendError("This business account is not active")
     client = twilio_client()
     if client is None:
         raise OutboundSendError("Twilio is not configured on this server")
@@ -88,6 +95,10 @@ def notify_escalation(tenant: Tenant, channel: Channel | None, message: str) -> 
             "Tenant %s has no escalation contact configured; skipping notify",
             tenant.slug,
         )
+        return
+
+    if not tenant_is_active_now(tenant.id):
+        logger.info("Tenant %s is not active; escalation notification skipped", tenant.slug)
         return
 
     client = twilio_client()

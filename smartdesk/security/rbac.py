@@ -29,6 +29,7 @@ from smartdesk.models import (
     utcnow,
 )
 from smartdesk.security.jwt_auth import AuthError, bearer_token_from_header, decode_token
+from smartdesk.tenancy import TENANT_DENIED_MESSAGES, tenant_access_denial
 
 
 @dataclass
@@ -237,6 +238,15 @@ def require_tenant(minimum_role: str = ROLE_VIEWER):
 
     Sets ``g.principal``, ``g.tenant`` and ``g.tenant_role``, and binds the
     Postgres RLS session variable for the transaction.
+
+    Tenant suspension (C6) is enforced HERE, once, for every tenant-scoped
+    route -- reads and writes alike.  Order: authenticate -> resolve tenant and
+    verify membership -> role check -> suspension check -> bind RLS -> view.
+    A caller who is not a member of a tenant still gets the generic 403 and so
+    learns nothing about that tenant's status.  Platform administrators are
+    exempt so they can still inspect and reactivate suspended tenants; the
+    exemption is the existing ``is_platform_admin`` flag, loaded from our own
+    database, and still requires a confirmed email (``role_for``).
     """
 
     def decorator(view):
@@ -249,12 +259,21 @@ def require_tenant(minimum_role: str = ROLE_VIEWER):
                 raise AuthError(
                     "Your role does not permit this action", status=403
                 )
+            if not principal.is_platform_admin:
+                denial = tenant_access_denial(tenant)
+                if denial is not None:
+                    raise AuthError(
+                        TENANT_DENIED_MESSAGES[denial], status=403, code=denial
+                    )
             g.principal = principal
             g.tenant = tenant
             g.tenant_role = role
             bind_rls_tenant(tenant.id)
             return view(*args, **kwargs)
 
+        # Marker so tests can enumerate every tenant-scoped route and prove the
+        # suspension guard covers each one (including routes added later).
+        wrapper.requires_tenant = True
         return wrapper
 
     return decorator

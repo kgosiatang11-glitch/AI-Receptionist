@@ -32,10 +32,14 @@ _JWKS_TTL_SECONDS = 600
 class AuthError(Exception):
     """Raised when a token is absent, malformed, expired or untrusted."""
 
-    def __init__(self, message: str, status: int = 401) -> None:
+    def __init__(self, message: str, status: int = 401, code: str | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.status = status
+        #: Optional stable machine-readable error code (e.g. ``tenant_suspended``).
+        #: ``None`` for every pre-existing auth failure, whose response body is
+        #: therefore unchanged.
+        self.code = code
 
 
 @dataclass(frozen=True)
