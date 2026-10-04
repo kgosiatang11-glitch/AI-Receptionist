@@ -115,11 +115,17 @@ def build_engine(
     conversation: Conversation,
     channel: Channel | None,
     inbound_message=None,
+    before_ai_call=None,
+    after_ai_call=None,
 ) -> ReceptionistEngine:
     """Return an engine bound to one tenant and one conversation.
 
     ``inbound_message``: pass the already-persisted inbound customer message
     when the caller owns its persistence (the WhatsApp webhook does).
+
+    ``before_ai_call`` / ``after_ai_call``: optional AI-usage gate hooks, see
+    ``ai.receptionist.BeforeAiCall``.  Only the WhatsApp webhook passes them;
+    voice does not (voice quota is a later phase).
     """
     loader, appender = conversation_service.engine_adapters(
         conversation, inbound_message=inbound_message
@@ -149,4 +155,6 @@ def build_engine(
         max_output_tokens=current_app.config.get("RECEPTIONIST_MAX_OUTPUT_TOKENS"),
         max_history_messages=current_app.config.get("MAX_CONVERSATION_HISTORY"),
         max_knowledge_chars=current_app.config.get("RECEPTIONIST_MAX_KNOWLEDGE_CHARS"),
+        before_ai_call=before_ai_call,
+        after_ai_call=after_ai_call,
     )

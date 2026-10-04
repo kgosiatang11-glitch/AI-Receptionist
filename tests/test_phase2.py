@@ -218,60 +218,77 @@ class LeadCaptureTests(MultiTenantTestCase):
 
 
 class UsageLimitTests(MultiTenantTestCase):
-    def test_new_conversation_over_limit_is_handed_off_not_answered(self):
-        self.padel.monthly_conversation_limit = 1
-        db.session.commit()
-        # One conversation already exists this month from fixtures (padel_conversation).
-        response = self.client.post(
+    """The monthly limit now caps AI replies per UTC month (Phase 3.3B).
+
+    The old limit counted NEW conversations only, so an existing conversation
+    could be answered without bound and a stored 0 meant "unlimited".  Both
+    behaviours are gone; the full matrix is in ``tests/test_whatsapp_quota.py``.
+    """
+
+    #: Not a greeting/handoff/booking/canned intent, so it always needs OpenAI.
+    AI_BODY = "How much does a court cost per hour?"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.openai_calls = []
+        outer = self
+
+        class _Completions:
+            def create(self, **kwargs):
+                outer.openai_calls.append(kwargs)
+                return type("R", (), {
+                    "choices": [type("C", (), {"message": type("M", (), {"content": "AI reply."})()})()],
+                })()
+
+        client = type("Client", (), {"chat": type("Chat", (), {"completions": _Completions()})()})()
+        patcher = patch("smartdesk.services.receptionist.openai_client", return_value=client)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _send(self, sender: str, body: str | None = None):
+        return self.client.post(
             "/whatsapp",
             data={
-                "From": "whatsapp:+26779998887",
+                "From": sender,
                 "To": "whatsapp:+26770000001",
-                "Body": "Hi, do you have courts available?",
+                "Body": body or self.AI_BODY,
                 "MessageSid": f"SM{uuid.uuid4().hex}",
             },
         )
+
+    def test_new_customer_over_limit_is_handed_off_not_answered(self):
+        self.padel.monthly_conversation_limit = 1
+        db.session.commit()
+        self.assertIn(b"AI reply.", self._send("whatsapp:+26779998880").data)
+
+        response = self._send("whatsapp:+26779998887")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"monthly conversation limit", response.data.lower())
+        self.assertEqual(len(self.openai_calls), 1)  # the refused message never reached OpenAI
 
         new_conversation = Conversation.query.filter_by(
             tenant_id=self.padel.id, session_key="whatsapp:+26779998887"
         ).one()
         self.assertEqual(new_conversation.status, "needs_human")
 
-    def test_existing_conversation_is_never_cut_off_mid_thread(self):
+    def test_existing_conversation_is_quota_controlled_too(self):
+        """The old behaviour (never cut off mid-thread) was the quota bypass."""
         self.padel.monthly_conversation_limit = 1
         db.session.commit()
-        # padel_conversation already has one message from fixtures; sending
-        # another message on the SAME conversation must not be blocked.
-        response = self.client.post(
-            "/whatsapp",
-            data={
-                # Must match the fixture conversation's session_key exactly
-                # (which includes the "whatsapp:" prefix) to land on the same,
-                # already-existing conversation rather than creating a new one.
-                "From": self.padel_conversation.session_key,
-                "To": "whatsapp:+26770000001",
-                "Body": "Following up on my earlier question",
-                "MessageSid": f"SM{uuid.uuid4().hex}",
-            },
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn(b"monthly conversation limit", response.data.lower())
+        # The fixture conversation already exists; the first AI reply on it
+        # uses the only unit, the next one must be refused.
+        sender = self.padel_conversation.session_key
+        self.assertIn(b"AI reply.", self._send(sender).data)
+        response = self._send(sender, "Following up on my earlier question")
+        self.assertIn(b"monthly conversation limit", response.data.lower())
+        self.assertEqual(len(self.openai_calls), 1)
 
-    def test_zero_limit_means_unlimited(self):
+    def test_zero_limit_means_no_ai_capacity_not_unlimited(self):
         self.padel.monthly_conversation_limit = 0
         db.session.commit()
-        response = self.client.post(
-            "/whatsapp",
-            data={
-                "From": "whatsapp:+26779998886",
-                "To": "whatsapp:+26770000001",
-                "Body": "Hi",
-                "MessageSid": f"SM{uuid.uuid4().hex}",
-            },
-        )
-        self.assertNotIn(b"monthly conversation limit", response.data.lower())
+        response = self._send("whatsapp:+26779998886")
+        self.assertIn(b"monthly conversation limit", response.data.lower())
+        self.assertEqual(self.openai_calls, [])
 
 
 if __name__ == "__main__":

@@ -19,9 +19,13 @@ from flask import Blueprint, Response, current_app, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.twiml.voice_response import VoiceResponse
 
+from ai.receptionist import AI_CALL_GRANTED, AIUsageDenied
 from smartdesk.extensions import db
+from smartdesk.models import Conversation
+from smartdesk.security.rbac import bind_rls_tenant
 from smartdesk.security.twilio_guard import twilio_webhook
 from smartdesk.services import conversations as conversation_service
+from smartdesk.services import usage as usage_service
 from smartdesk.services.knowledge import build_persona, get_profile
 from smartdesk.services.leads import maybe_capture_lead
 from smartdesk.services.receptionist import build_engine
@@ -45,42 +49,84 @@ FALLBACK_TEXT = (
     "Sorry, we could not process that message right now. Please try again shortly."
 )
 
+#: Deterministic reply when a tenant has used all of its monthly AI replies
+#: (``Tenant.monthly_conversation_limit``, counted per UTC calendar month).
+#: Local text only: producing it never calls OpenAI or consumes quota.
 LIMIT_REACHED_TEXT = (
     "Thanks for reaching out. This business has reached its monthly conversation "
     "limit — a team member will follow up with you directly."
 )
 
 
-def _monthly_conversation_count(tenant_id: str) -> int:
-    from datetime import datetime, timezone
+class _AiUsageGate:
+    """AI-usage quota for ONE inbound WhatsApp message.
 
-    from smartdesk.models import Conversation
+    Handed to the engine as its ``before_ai_call`` / ``after_ai_call`` hooks, so
+    it runs only when an OpenAI request is genuinely about to be made -- never
+    for duplicates, human takeover, canned/handoff/booking replies, or tenants
+    that are suspended or disabled (those return before the engine).
 
-    month_start = datetime.now(timezone.utc).replace(
-        day=1, hour=0, minute=0, second=0, microsecond=0
-    )
-    return Conversation.query.filter(
-        Conversation.tenant_id == tenant_id, Conversation.created_at >= month_start
-    ).count()
+    The idempotency key is ``whatsapp:<MessageSid>``: stable across Twilio
+    retries, unique per inbound message, and (with the tenant and kind) unique
+    in the database.  It is NOT per tenant or per conversation, because one
+    conversation legitimately produces many AI replies.
 
+    Transaction choreography (OpenAI never runs inside a transaction):
 
-def _is_new_conversation(conversation) -> bool:
-    from smartdesk.models import Message
-
-    return Message.query.filter_by(conversation_id=conversation.id).count() == 0
-
-
-def _over_monthly_limit(tenant, conversation) -> bool:
-    """Per-tenant limit, replacing the legacy global usage.txt counter.
-
-    Only refuses a conversation that is NEW this call, matching the original
-    semantics (a limit on new conversations, not on message volume), so an
-    existing customer already mid-conversation is never cut off mid-thread.
+        txn 1:  ... inbound claim, customer, conversation, usage, lead ...
+                reserve_ai_reply  ->  COMMIT          (``before``)
+        --- no transaction open: the OpenAI request happens here ---
+        txn 2:  re-bind tenant (``after``), store the reply,
+                commit_reservation | release_reservation, usage event -> COMMIT
     """
-    limit = tenant.monthly_conversation_limit
-    if not limit or not _is_new_conversation(conversation):
-        return False
-    return _monthly_conversation_count(tenant.id) > limit
+
+    def __init__(self, tenant_id: str, conversation_id: str, message_sid: str) -> None:
+        self.tenant_id = tenant_id
+        self.conversation_id = conversation_id
+        self.message_sid = message_sid
+        self.key = f"whatsapp:{message_sid}"
+        #: Set only once the reservation is durably committed (end of txn 1).
+        self.reservation_id: str | None = None
+        self.finalized = False
+
+    def before(self) -> str:
+        result = usage_service.reserve_ai_reply(
+            self.tenant_id,
+            self.key,
+            metadata={"channel": "whatsapp", "conversation_id": self.conversation_id},
+        )
+        # Only a reservation THIS call created authorises an OpenAI request.
+        # "duplicate"/"already_released" mean an earlier attempt owns this
+        # message; "quota_exceeded" means no capacity.
+        if not (result.allowed and result.created):
+            return result.reason
+        reservation_id = result.reservation.id
+        db.session.commit()  # end txn 1: inbound claim + reservation are durable
+        self.reservation_id = reservation_id
+        return AI_CALL_GRANTED
+
+    def after(self) -> None:
+        # ``app.current_tenant_id`` is transaction-local, so it was reset by the
+        # commit above.  Re-bind it first thing in the new transaction, before
+        # any ORM object (all expired by the commit) is reloaded.
+        bind_rls_tenant(self.tenant_id)
+
+    def finalize(self, outcome: str | None, usage: dict | None) -> None:
+        """Commit (success) or release (anything else) -- at most once."""
+        if self.reservation_id is None or self.finalized:
+            return
+        self.finalized = True
+        if outcome == "succeeded":
+            usage = usage or {}
+            usage_service.commit_reservation(
+                self.tenant_id,
+                self.reservation_id,
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+            )
+        else:
+            usage_service.release_reservation(self.tenant_id, self.reservation_id)
 
 
 def _twiml(body: str = "") -> Response:
@@ -109,12 +155,25 @@ def _truncate(text: str) -> str:
 def whatsapp() -> Response:
     """Inbound WhatsApp message.
 
-    Flow (one database transaction, committed once at the end):
+    Flow:
 
         signature (decorator) -> channel + tenant -> MessageSid validation
           -> duplicate fast-path -> customer / conversation
           -> ATOMIC CLAIM: store the inbound message (unique per MessageSid)
-          -> usage + lead capture -> engine -> store assistant reply -> commit
+          -> usage + lead capture -> human takeover check -> engine
+
+    Replies that need no OpenAI (canned, handoff, booking, human takeover, ...)
+    stay in ONE transaction committed at the end.  A reply that does need
+    OpenAI is gated by the atomic AI-usage reservation (``_AiUsageGate``):
+
+        txn 1: everything above + reserve 1 AI reply -> COMMIT
+        OpenAI request, with NO database transaction open
+        txn 2: store reply + commit (success) / release (failure) the
+               reservation + usage event -> COMMIT
+
+    No reservation means no OpenAI request: when the tenant is out of monthly
+    AI replies the engine is stopped before it calls OpenAI and the customer
+    gets ``LIMIT_REACHED_TEXT``.
 
     HTTP status policy (Twilio only retries what is not 2xx, and only when the
     webhook URL carries ``#rc=N&rp=5xx`` -- by default it retries connection
@@ -130,11 +189,17 @@ def whatsapp() -> Response:
     * 200 + reply  everything answered, including an OpenAI outage -- the
            engine degrades to a fallback reply and that turn IS recorded, so
            retrying would only re-bill the model for the same answer.
-    * 500  any unexpected failure (database error, bug).  The transaction is
-           rolled back, which also releases the idempotency claim, so a Twilio
-           retry of the same MessageSid is processed cleanly exactly once.
-           (The previous behaviour -- an apology with HTTP 200 -- told Twilio
-           the message was handled when it was not.)
+    * 500  any unexpected failure BEFORE the reservation is committed
+           (database error, bug).  The transaction is rolled back, which also
+           releases the idempotency claim, so a Twilio retry of the same
+           MessageSid is processed cleanly exactly once.  (The previous
+           behaviour -- an apology with HTTP 200 -- told Twilio the message
+           was handled when it was not.)
+    * 200 + fallback  an unexpected failure AFTER the reservation committed.
+           The inbound message is by then durable, so a retry would only be
+           ignored as a duplicate; instead the reservation is released (OpenAI
+           failed) or left for stale recovery (reply generated but accounting
+           failed), nothing is retried, and the customer gets ``FALLBACK_TEXT``.
     """
     incoming = _truncate(request.values.get("Body", "").strip())
     sender = request.values.get("From", "").strip()
@@ -152,6 +217,9 @@ def whatsapp() -> Response:
 
     tenant = channel.tenant
     bind_tenant(tenant)
+    # Plain value for use after the commit that ends txn 1 expires every ORM
+    # object (reloading them requires the tenant to be re-bound first).
+    tenant_id = tenant.id
 
     # Every genuine Twilio inbound message has a MessageSid, and it is the
     # identity we de-duplicate on.  Without one we cannot be idempotent, so a
@@ -183,12 +251,6 @@ def whatsapp() -> Response:
         db.session.commit()
         return _twiml("Please send a message and I will be happy to help.")
 
-    # The limit only ever applies to brand-new conversations, so it must be
-    # evaluated BEFORE this call's inbound row exists (afterwards the
-    # conversation is no longer empty).  Evaluating is read-only; acting on it
-    # happens only if we win the claim below.
-    over_limit = _over_monthly_limit(tenant, conversation)
-
     # ATOMIC CLAIM + the single authoritative write of the inbound message.
     # Losing the race to an identical MessageSid means the other request owns
     # (or already finished) this event: do nothing further.
@@ -198,13 +260,6 @@ def whatsapp() -> Response:
         )
     except conversation_service.DuplicateInboundMessage:
         return _duplicate_response(tenant, message_sid)
-
-    if over_limit:
-        conversation_service.mark_needs_human(
-            conversation, "Monthly conversation limit reached"
-        )
-        db.session.commit()
-        return _twiml(LIMIT_REACHED_TEXT)
 
     conversation_service.record_usage(tenant.id, "message_in", "whatsapp")
 
@@ -218,16 +273,121 @@ def whatsapp() -> Response:
 
     # The webhook owns persistence of the inbound turn; the engine only
     # persists its own reply (and does not re-show the model this message).
-    engine = build_engine(tenant, conversation, channel, inbound_message=inbound)
-    reply = engine.reply(incoming, conversation.session_key, channel="whatsapp",
-                         customer_reference=sender)
+    gate = _AiUsageGate(tenant_id, conversation.id, message_sid)
+    engine = build_engine(
+        tenant, conversation, channel, inbound_message=inbound,
+        before_ai_call=gate.before, after_ai_call=gate.after,
+    )
+    conversation_id = conversation.id
+    try:
+        reply = engine.reply(incoming, conversation.session_key, channel="whatsapp",
+                             customer_reference=sender)
+    except AIUsageDenied as denied:
+        # The gate refused, so OpenAI was never called and the engine recorded
+        # no turn.  Txn 1 is still open here (nothing was committed).
+        return _ai_denied_response(tenant, conversation, message_sid, denied)
+    except Exception:
+        if gate.reservation_id is None:
+            raise  # before the durable point: 500 + rollback, a retry is clean
+        return _recover_after_reservation_failure(gate, engine)
+
     # Token usage rides in the existing UsageEvent.meta JSON (no schema
     # change). Absent when no OpenAI call was made; token values are None
     # when OpenAI returned no usage -- never estimated.
     usage_meta = {"openai_usage": engine.last_usage} if engine.last_usage else {}
-    conversation_service.record_usage(tenant.id, "message_out", "whatsapp", **usage_meta)
+    try:
+        gate.finalize(engine.ai_outcome, engine.last_usage)
+    except (usage_service.ReservationStateError, usage_service.ReservationNotFound):
+        # Logical problem (e.g. the stale sweep already released it); the
+        # session is healthy, so the reply and its records are still saved.
+        logger.exception(
+            "AI usage reservation %s (tenant %s) could not be finalised",
+            gate.reservation_id, tenant_id,
+        )
+        usage_meta["quota_finalize_error"] = True
+    except Exception:
+        # Database failure while committing/releasing.  The reply WAS generated
+        # (and billed), so deliver it; the reservation stays 'reserved' and is
+        # returned to capacity by stale-reservation recovery.  Never retry
+        # OpenAI and never reserve again.
+        logger.exception(
+            "AI usage reservation %s (tenant %s) left for stale recovery: "
+            "finalise failed after OpenAI answered",
+            gate.reservation_id, tenant_id,
+        )
+        _persist_reply_after_finalize_failure(
+            tenant_id, conversation_id, reply, usage_meta
+        )
+        return _twiml(reply)
+
+    conversation_service.record_usage(tenant_id, "message_out", "whatsapp", **usage_meta)
     db.session.commit()
     return _twiml(reply)
+
+
+def _ai_denied_response(tenant, conversation, message_sid: str, denied: AIUsageDenied) -> Response:
+    """Answer a message whose AI reservation was refused (OpenAI never called)."""
+    if denied.reason != "quota_exceeded":
+        # "duplicate"/"already_released": an earlier attempt already owns this
+        # message's reservation.  Answering again would double-reply.
+        return _duplicate_response(tenant, message_sid)
+    # Out of monthly AI replies: hand the conversation to a human (the existing
+    # limit behaviour) with a local, deterministic message.  A conversation
+    # already waiting for a human is not given another handoff event per message.
+    if conversation.status != "needs_human":
+        conversation_service.mark_needs_human(conversation, "Monthly AI reply limit reached")
+    db.session.commit()
+    return _twiml(LIMIT_REACHED_TEXT)
+
+
+def _recover_after_reservation_failure(gate: _AiUsageGate, engine) -> Response:
+    """An unexpected error after the reservation was committed.
+
+    Fresh transaction, tenant re-bound.  If OpenAI did not give a usable answer
+    the reservation is released; if it did, commit is attempted once; if even
+    that fails it stays 'reserved' for stale recovery.  OpenAI is never called
+    again and no second reservation is made.
+    """
+    logger.exception(
+        "Unexpected failure after AI reservation %s (tenant %s)",
+        gate.reservation_id, gate.tenant_id,
+    )
+    try:
+        db.session.rollback()
+        bind_rls_tenant(gate.tenant_id)
+        gate.finalize(engine.ai_outcome, engine.last_usage)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception(
+            "AI usage reservation %s (tenant %s) left for stale recovery",
+            gate.reservation_id, gate.tenant_id,
+        )
+    return _twiml(FALLBACK_TEXT)
+
+
+def _persist_reply_after_finalize_failure(
+    tenant_id: str, conversation_id: str, reply: str, usage_meta: dict
+) -> None:
+    """Best effort: keep the generated reply and its usage event.
+
+    The failed transaction (which held the engine's assistant message) was
+    rolled back, so store them again in a fresh one, WITHOUT touching the
+    reservation.
+    """
+    try:
+        db.session.rollback()
+        bind_rls_tenant(tenant_id)
+        conversation = db.session.get(Conversation, conversation_id)
+        if conversation is not None:
+            conversation_service.append_message(conversation, "assistant", reply)
+        conversation_service.record_usage(
+            tenant_id, "message_out", "whatsapp", quota_commit_failed=True, **usage_meta
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logger.exception("Could not persist reply for conversation %s", conversation_id)
 
 
 def _duplicate_response(tenant, message_sid: str) -> Response:

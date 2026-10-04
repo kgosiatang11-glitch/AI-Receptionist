@@ -197,15 +197,20 @@ class NormalAndDuplicateDeliveryTests(WhatsAppWebhookTestCase):
     def test_duplicate_of_an_over_limit_message_adds_nothing(self):
         self.padel.monthly_conversation_limit = 1
         db.session.commit()
+        # The first AI reply uses the tenant's only unit...
+        self.assertIn(b"Fake AI reply.", self.post(new_sid(), sender="+26773000008").data)
+        # ...so the next message is refused with the limit text (no OpenAI call).
         sid = new_sid()
         first = self.post(sid, sender="+26773000009")
         self.assertIn(b"monthly conversation limit", first.data.lower())
+        self.assertEqual(len(self.openai.calls), 1)
         conv = self.conversation(sender="+26773000009")
         events_before = len(self.rows(conv, "event"))
         second = self.post(sid, sender="+26773000009")
         self.assertFalse(self.has_reply(second))
         self.assertEqual(len(self.rows(conv, "customer")), 1)
         self.assertEqual(len(self.rows(conv, "event")), events_before)
+        self.assertEqual(len(self.openai.calls), 1)
 
 
 class InboundPersistenceOwnershipTests(WhatsAppWebhookTestCase):

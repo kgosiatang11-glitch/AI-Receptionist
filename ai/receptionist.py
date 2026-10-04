@@ -36,6 +36,30 @@ KnowledgeDictProvider = Callable[[], dict]
 #: Returns a reply if this message was booking-related, else None to let the
 #: normal canned-reply / OpenAI path handle it.
 BookingHandler = Callable[[str, str], str | None]
+#: Called immediately BEFORE the OpenAI request. Returns ``AI_CALL_GRANTED`` to
+#: allow the call, or any other string (a denial reason) to forbid it. This is
+#: where a caller acquires AI-usage quota; with no gate the engine behaves
+#: exactly as before (legacy single-tenant app, voice, direct construction).
+BeforeAiCall = Callable[[], str]
+#: Called immediately AFTER the OpenAI attempt finished (success or failure),
+#: before anything else touches the database. Lets the caller start a fresh
+#: transaction/tenant binding, because none may be open during the request.
+AfterAiCall = Callable[[], None]
+
+AI_CALL_GRANTED = "granted"
+
+
+class AIUsageDenied(Exception):
+    """The OpenAI call was not allowed, so it was never made.
+
+    Raised by ``ReceptionistEngine.reply`` when the ``before_ai_call`` gate
+    refuses. Nothing was sent to OpenAI and the engine recorded no turn; the
+    caller decides what the customer is told.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 OBRIEN_SYSTEM_RULES = """
@@ -101,6 +125,8 @@ class ReceptionistEngine:
         max_output_tokens: int | None = None,
         max_history_messages: int | None = None,
         max_knowledge_chars: int | None = None,
+        before_ai_call: BeforeAiCall | None = None,
+        after_ai_call: AfterAiCall | None = None,
     ) -> None:
         self._client_provider = client_provider
         self._model = model
@@ -119,6 +145,10 @@ class ReceptionistEngine:
         # None by default: existing single-tenant deployments and any test
         # that constructs the engine directly get exactly the old behaviour.
         self._booking_handler = booking_handler
+        # Optional AI-usage gate around the single OpenAI call site. None (the
+        # default) means no gating, i.e. behaviour identical to before.
+        self._before_ai_call = before_ai_call
+        self._after_ai_call = after_ai_call
         # Cost-containment limits (see ai/limits.py). None / invalid values
         # fall back to the documented defaults -- never to "unlimited".
         self._max_output_tokens = safe_limit(
@@ -138,6 +168,11 @@ class ReceptionistEngine:
         #: carried no usage, the dict is present with None token values --
         #: counts are never estimated.
         self.last_usage: dict[str, Any] | None = None
+        #: What happened to the most recent reply's OpenAI call: None if no
+        #: call was attempted (canned/local/handoff/booking reply, or no
+        #: client), "succeeded" if OpenAI returned a usable reply, "failed" if
+        #: the call or its response handling raised (a fallback was sent).
+        self.ai_outcome: str | None = None
 
     @property
     def persona(self) -> TenantPersona:
@@ -152,6 +187,7 @@ class ReceptionistEngine:
     ) -> str:
         """Produce one answer and retain it only in this customer's session."""
         self.last_usage = None
+        self.ai_outcome = None
         persona = self.persona
         local_greeting = self._setswana_greeting(message, persona)
         if local_greeting:
@@ -198,6 +234,7 @@ class ReceptionistEngine:
     def generate_openai_reply(self, message: str, session_id: str, channel: str) -> str:
         """Generate an OpenAI reply directly for compatibility and focused tests."""
         self.last_usage = None
+        self.ai_outcome = None
         return self._generate_openai_reply(message, session_id, channel)
 
     def _generate_openai_reply(self, message: str, session_id: str, channel: str) -> str:
@@ -237,6 +274,16 @@ class ReceptionistEngine:
         messages.extend(history)
         messages.append({"role": "user", "content": user_prompt})
 
+        # NO OpenAI CALL without the gate's permission. Everything above this
+        # line (history, knowledge, persona) only reads; the gate may commit
+        # and end the caller's transaction, so nothing database-related may
+        # sit between a grant and the request below.
+        if self._before_ai_call is not None:
+            verdict = self._before_ai_call()
+            if verdict != AI_CALL_GRANTED:
+                raise AIUsageDenied(verdict)
+
+        self.ai_outcome = "failed"
         try:
             response = client.chat.completions.create(
                 model=self._model,
@@ -247,12 +294,15 @@ class ReceptionistEngine:
             # even if the reply turns out to be unusable.
             self.last_usage = self._extract_usage(response)
             reply = response.choices[0].message.content.strip()
+            self.ai_outcome = "succeeded"
         except Exception:
             logging.getLogger(__name__).exception("OpenAI reply generation failed")
             reply = (
                 "I don't have that information available at the moment. "
                 "Please contact the business directly for help."
             )
+        if self._after_ai_call is not None:
+            self._after_ai_call()
         return self._record_turn(session_id, message, reply)
 
     def _bound_history(self, history: list[dict[str, str]]) -> list[dict[str, str]]:

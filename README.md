@@ -7,7 +7,7 @@ Flask-based O'Brien receptionist with Twilio WhatsApp and Voice channels, one ve
 - Replies instantly for common intents like pricing, hours, bookings, location, and payment
 - Escalates to a human when the user asks for a person or manager
 - Gives OpenAI the verified business knowledge and O'Brien rules for natural-language answers without making OpenAI the source of truth
-- Tracks first-time visitors and counts new 24-hour conversations against a monthly limit
+- Limits each tenant to a monthly number of WhatsApp AI replies (atomic reservation)
 - Answers incoming Twilio Voice calls, transcribes each spoken turn, and reads a shared-AI reply back to the caller
 - Keeps WhatsApp and Voice as channel adapters over the same O'Brien engine
 - Uses the same sales policy across WhatsApp and Voice: explain clearly, recommend relevant value, move genuine interest to setup, and hand off immediately when a human is requested
@@ -89,9 +89,16 @@ row-level security. `smartdesk/services/usage.py` reserves capacity with a singl
 conditional UPDATE so PostgreSQL, not Python, enforces
 `used_units + n <= Tenant.monthly_conversation_limit` under concurrency; limits
 of zero or below mean no capacity, never unlimited. Retries are idempotent via
-`UNIQUE (tenant_id, kind, idempotency_key)`. Nothing in WhatsApp/Voice calls the
-service yet and the existing monthly limit check is unchanged. Reservations must
-be made in their own short transaction, never held across the OpenAI call.
+`UNIQUE (tenant_id, kind, idempotency_key)`. **WhatsApp** now calls the
+service (Phase 3.3B): `Tenant.monthly_conversation_limit` means *AI replies per UTC
+month* on WhatsApp. Each AI reply reserves one unit (key `whatsapp:<MessageSid>`)
+and commits that reservation in its own short transaction, OpenAI runs with no
+transaction open, and the reservation is then committed (success) or released
+(OpenAI failure). No reservation means no OpenAI call; at the limit the customer
+gets the fixed limit message and the conversation is handed to a human. Local
+replies (greetings, handoff, no OpenAI client) use no quota. **Voice is not wired
+yet.** A reservation orphaned by a crash or a failed commit stays `reserved` until
+`release_stale_reservations` reclaims it.
 `USAGE_RESERVATION_STALE_SECONDS` (default 600) sets when
 `release_stale_reservations` may reclaim an abandoned reservation; nothing runs
 it on a schedule yet.
