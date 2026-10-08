@@ -128,6 +128,8 @@ def build_engine(
     inbound_message=None,
     before_ai_call=None,
     after_ai_call=None,
+    assistant_provider_message_id: str | None = None,
+    persist_failed_ai_reply: bool = True,
 ) -> ReceptionistEngine:
     """Return an engine bound to one tenant and one conversation.
 
@@ -135,12 +137,33 @@ def build_engine(
     when the caller owns its persistence (the WhatsApp webhook does).
 
     ``before_ai_call`` / ``after_ai_call``: optional AI-usage gate hooks, see
-    ``ai.receptionist.BeforeAiCall``.  Only the WhatsApp webhook passes them;
-    voice does not (voice quota is a later phase).
+    ``ai.receptionist.BeforeAiCall``.  Webhook channels pass them when they
+    need to reserve one AI reply before the OpenAI request.
+
+    ``assistant_provider_message_id``: tags the persisted assistant reply with
+    the caller's turn key (voice), so a retry can replay exactly that reply.
+
+    ``persist_failed_ai_reply``: when False, the engine's fallback text after a
+    failed OpenAI request is spoken/returned but NOT stored as an assistant
+    message (voice), so a failure never looks like a real answer in history.
     """
-    loader, appender = conversation_service.engine_adapters(
-        conversation, inbound_message=inbound_message
+    base_loader, base_appender = conversation_service.engine_adapters(
+        conversation,
+        inbound_message=inbound_message,
+        assistant_provider_message_id=assistant_provider_message_id,
     )
+    loader = base_loader
+    engine_ref: list[ReceptionistEngine] = []
+
+    def appender(session_id: str, role: str, content: str) -> None:
+        if (
+            not persist_failed_ai_reply
+            and role == "assistant"
+            and engine_ref
+            and engine_ref[0].ai_outcome == "failed"
+        ):
+            return
+        base_appender(session_id, role, content)
 
     def escalation_notifier(_reference: str, message: str) -> None:
         conversation_service.mark_needs_human(
@@ -153,7 +176,7 @@ def build_engine(
             tenant, conversation, "voice" if channel and channel.kind == "voice" else "whatsapp", message
         )
 
-    return ReceptionistEngine(
+    engine = ReceptionistEngine(
         client_provider=openai_client,
         model=current_app.config.get("OPENAI_MODEL", "gpt-4o-mini"),
         history_loader=loader,
@@ -169,3 +192,5 @@ def build_engine(
         before_ai_call=before_ai_call,
         after_ai_call=after_ai_call,
     )
+    engine_ref.append(engine)
+    return engine

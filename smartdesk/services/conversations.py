@@ -102,6 +102,23 @@ def find_inbound_message(tenant_id: str, provider_message_id: str) -> Message | 
     ).first()
 
 
+def find_turn_reply(
+    tenant_id: str, conversation_id: str, turn_key: str
+) -> Message | None:
+    """Return the assistant reply persisted for EXACTLY this turn key, or None.
+
+    Voice tags each reply with its turn key (``voice:<CallSid>:<turn>``) in
+    ``provider_message_id``, so a replay can prove which turn a stored reply
+    belongs to instead of guessing "the latest assistant message".
+    """
+    return Message.query.filter_by(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        role="assistant",
+        provider_message_id=turn_key,
+    ).first()
+
+
 def store_inbound_message(
     conversation: Conversation, body: str, provider_message_id: str
 ) -> Message:
@@ -161,7 +178,11 @@ def record_usage(
     )
 
 
-def engine_adapters(conversation: Conversation, inbound_message: Message | None = None):
+def engine_adapters(
+    conversation: Conversation,
+    inbound_message: Message | None = None,
+    assistant_provider_message_id: str | None = None,
+):
     """Build the (loader, appender) pair the ReceptionistEngine expects.
 
     The engine passes a ``session_id`` string; it is ignored here because the
@@ -177,8 +198,9 @@ def engine_adapters(conversation: Conversation, inbound_message: Message | None 
     * the loader leaves that message out of the history (the engine already
       includes it in its prompt, so the model would otherwise see it twice).
 
-    Without it the adapters behave exactly as before (used by the voice path,
-    which is out of scope for this change).
+    ``assistant_provider_message_id`` tags the persisted assistant reply with
+    the turn key (voice), so the reply can later be matched to its exact turn.
+    Without either argument the adapters behave exactly as before.
     """
     exclude = (inbound_message.id,) if inbound_message is not None else ()
 
@@ -189,7 +211,12 @@ def engine_adapters(conversation: Conversation, inbound_message: Message | None 
         if inbound_message is not None and role == "user":
             return
         append_message(
-            conversation, "customer" if role == "user" else "assistant", content
+            conversation,
+            "customer" if role == "user" else "assistant",
+            content,
+            provider_message_id=(
+                assistant_provider_message_id if role != "user" else None
+            ),
         )
 
     return loader, appender

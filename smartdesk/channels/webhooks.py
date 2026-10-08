@@ -58,18 +58,32 @@ LIMIT_REACHED_TEXT = (
 )
 
 
+#: ``Message.provider_message_id`` is VARCHAR(64); the voice turn key
+#: ``voice:<CallSid>:<turn>`` is stored there on both the customer row (the
+#: idempotency claim) and the assistant row (so a replay is provably this turn).
+_VOICE_SID_RE = re.compile(r"^[\w.-]{1,40}$")
+_VOICE_MAX_TURN = 999_999
+
+#: Local, deterministic reply when a voice turn's AI request failed and was
+#: released.  Never persisted as an assistant message.
+VOICE_AI_FAILED_TEXT = (
+    "I don't have that information available at the moment. "
+    "Please contact the business directly for help."
+)
+
+
 class _AiUsageGate:
-    """AI-usage quota for ONE inbound WhatsApp message.
+    """AI-usage quota for one inbound channel turn.
 
     Handed to the engine as its ``before_ai_call`` / ``after_ai_call`` hooks, so
     it runs only when an OpenAI request is genuinely about to be made -- never
     for duplicates, human takeover, canned/handoff/booking replies, or tenants
     that are suspended or disabled (those return before the engine).
 
-    The idempotency key is ``whatsapp:<MessageSid>``: stable across Twilio
-    retries, unique per inbound message, and (with the tenant and kind) unique
-    in the database.  It is NOT per tenant or per conversation, because one
-    conversation legitimately produces many AI replies.
+    The caller supplies an idempotency key that is stable across Twilio retries
+    and unique for an inbound turn, for example ``whatsapp:<MessageSid>`` or
+    ``voice:<CallSid>:<turn>``.  With tenant and kind it is unique in the
+    database, while one conversation can still produce many AI replies.
 
     Transaction choreography (OpenAI never runs inside a transaction):
 
@@ -80,11 +94,13 @@ class _AiUsageGate:
                 commit_reservation | release_reservation, usage event -> COMMIT
     """
 
-    def __init__(self, tenant_id: str, conversation_id: str, message_sid: str) -> None:
+    def __init__(
+        self, tenant_id: str, conversation_id: str, idempotency_key: str, channel: str
+    ) -> None:
         self.tenant_id = tenant_id
         self.conversation_id = conversation_id
-        self.message_sid = message_sid
-        self.key = f"whatsapp:{message_sid}"
+        self.key = idempotency_key
+        self.channel = channel
         #: Set only once the reservation is durably committed (end of txn 1).
         self.reservation_id: str | None = None
         self.finalized = False
@@ -93,7 +109,7 @@ class _AiUsageGate:
         result = usage_service.reserve_ai_reply(
             self.tenant_id,
             self.key,
-            metadata={"channel": "whatsapp", "conversation_id": self.conversation_id},
+            metadata={"channel": self.channel, "conversation_id": self.conversation_id},
         )
         # Only a reservation THIS call created authorises an OpenAI request.
         # "duplicate"/"already_released" mean an earlier attempt owns this
@@ -138,6 +154,50 @@ def _twiml(body: str = "") -> Response:
 
 def _voice_twiml(response: VoiceResponse) -> Response:
     return Response(str(response), status=200, mimetype="application/xml")
+
+
+def _voice_duplicate_turn_response(
+    tenant_id: str,
+    conversation: Conversation,
+    key: str,
+    turn: int,
+    language: str,
+) -> Response:
+    """Answer a redelivered voice callback without any AI request or new quota.
+
+    The state of the turn is decided from facts that belong to THIS turn key:
+
+    * an assistant reply tagged with the exact key -> replay it (canned,
+      handoff and AI replies alike) and continue at the next turn;
+    * no reply, reservation ``reserved`` -> the original is still in flight:
+      keep the same turn open;
+    * no reply, reservation ``released`` (OpenAI failed, or stale recovery) or
+      ``committed`` without a stored reply -> local fallback, next turn;
+    * no reply and no reservation -> the turn was refused for quota (the only
+      committed state with neither): the deterministic limit message + hangup.
+
+    Never "the latest assistant message": that could belong to another turn.
+    """
+    response = VoiceResponse()
+    reply = conversation_service.find_turn_reply(tenant_id, conversation.id, key)
+    reservation = usage_service.find_reservation(
+        tenant_id, usage_service.AI_REPLY_KIND, key
+    )
+    if reply is not None:
+        response.say(reply.body, language=language)
+        _gather(response, "Is there anything else I can help you with?", turn=turn + 1)
+    elif reservation is None:
+        response.say(LIMIT_REACHED_TEXT, language=language)
+        response.hangup()
+    elif reservation.status == "reserved":
+        response.say("I'm still processing your previous request.", language=language)
+        _gather(response, "Please say that again in a moment.", turn=turn)
+    else:
+        response.say(VOICE_AI_FAILED_TEXT, language=language)
+        _gather(response, "Is there anything else I can help you with?", turn=turn + 1)
+    logger.info("Duplicate voice callback ignored (tenant=%s, key=%s)", tenant_id, key)
+    db.session.rollback()
+    return _voice_twiml(response)
 
 
 def _truncate(text: str) -> str:
@@ -273,7 +333,7 @@ def whatsapp() -> Response:
 
     # The webhook owns persistence of the inbound turn; the engine only
     # persists its own reply (and does not re-show the model this message).
-    gate = _AiUsageGate(tenant_id, conversation.id, message_sid)
+    gate = _AiUsageGate(tenant_id, conversation.id, f"whatsapp:{message_sid}", "whatsapp")
     engine = build_engine(
         tenant, conversation, channel, inbound_message=inbound,
         before_ai_call=gate.before, after_ai_call=gate.after,
@@ -412,13 +472,15 @@ def _duplicate_response(tenant, message_sid: str) -> Response:
 # ---------------------------------------------------------------------------
 
 
-def _gather(response: VoiceResponse, prompt: str, silence: int = 0) -> None:
+def _gather(response: VoiceResponse, prompt: str, silence: int = 0, turn: int = 1) -> None:
     gather = response.gather(
         input="speech",
         timeout=max(1, min(current_app.config["VOICE_LISTEN_TIMEOUT_SECONDS"], 60)),
         speech_timeout=current_app.config["VOICE_SPEECH_TIMEOUT_SECONDS"],
         language=current_app.config["TWILIO_VOICE_LANGUAGE"],
-        action=f"/voice/continue?silence={silence}",
+        # The turn travels in Twilio's callback URL.  A retry uses exactly the
+        # same URL, hence the same reservation key (voice:<CallSid>:<turn>).
+        action=f"/voice/continue?silence={silence}&turn={turn}",
         method="POST",
         action_on_empty_result=True,
     )
@@ -456,7 +518,10 @@ def voice_answer() -> Response:
         or (profile.greeting if profile else None)
         or f"Hello! Thank you for calling {tenant.name}. How can I help you today?"
     )
-    _gather(response, greeting)
+    # /voice only delivers a local greeting.  It makes no OpenAI request and
+    # therefore never consumes quota; the first speech turn is protected by
+    # /voice/continue below.
+    _gather(response, greeting, turn=1)
     db.session.commit()
     return _voice_twiml(response)
 
@@ -472,6 +537,10 @@ def voice_continue() -> Response:
         silence = max(0, int(request.args.get("silence", "0")))
     except ValueError:
         silence = 0
+    try:
+        turn = max(1, int(request.args.get("turn", "1")))
+    except ValueError:
+        turn = 1
 
     response = VoiceResponse()
     try:
@@ -497,23 +566,99 @@ def voice_continue() -> Response:
             response,
             "I'm sorry, I didn't catch that. Please say that again.",
             silence=silence + 1,
+            turn=turn,
         )
         return _voice_twiml(response)
+
+    # The turn key is the idempotency identity: it must be unique per call and
+    # fit Message.provider_message_id.  A missing/odd CallSid cannot be made
+    # idempotent, so it is refused (same policy as a WhatsApp MessageSid).
+    if not _VOICE_SID_RE.match(call_sid) or call_sid == "unknown":
+        logger.warning("Voice webhook for tenant %s rejected: bad CallSid", tenant.slug)
+        db.session.rollback()
+        return Response("Missing or invalid CallSid", status=400, mimetype="text/plain")
+    turn = min(turn, _VOICE_MAX_TURN)
+    key = f"voice:{call_sid}:{turn}"
+    tenant_id = tenant.id
 
     customer = get_or_create_customer(tenant, caller)
     conversation = get_or_create_conversation(
         tenant, channel, f"voice:{call_sid}", "voice", customer
     )
-    conversation_service.append_message(conversation, "customer", transcript)
+
+    # A staff member may have taken over between Gather callbacks.  Do not
+    # append a turn, notify, reserve quota, or call OpenAI after that point.
+    if conversation.human_takeover:
+        response.say("A team member will continue helping you. Goodbye.", language=language)
+        response.hangup()
+        db.session.commit()
+        return _voice_twiml(response)
+
+    # Fast path for the usual retry (an optimisation only; the unique index
+    # behind store_inbound_message is the concurrency backstop).
+    if conversation_service.find_inbound_message(tenant_id, key) is not None:
+        return _voice_duplicate_turn_response(tenant_id, conversation, key, turn, language)
+
+    # ATOMIC CLAIM of this turn: the customer row carries the turn key.  Losing
+    # the race means another delivery owns (or finished) the turn.
+    try:
+        inbound = conversation_service.store_inbound_message(conversation, transcript, key)
+    except conversation_service.DuplicateInboundMessage:
+        return _voice_duplicate_turn_response(tenant_id, conversation, key, turn, language)
 
     persona = build_persona(tenant)
     maybe_capture_lead(tenant, conversation, customer, transcript, persona, "voice")
 
-    engine = build_engine(tenant, conversation, channel)
-    reply = engine.reply(
-        transcript, conversation.session_key, channel="voice", customer_reference=caller
+    gate = _AiUsageGate(tenant_id, conversation.id, key, "voice")
+    engine = build_engine(
+        tenant, conversation, channel, inbound_message=inbound,
+        before_ai_call=gate.before, after_ai_call=gate.after,
+        assistant_provider_message_id=key, persist_failed_ai_reply=False,
     )
+    try:
+        reply = engine.reply(
+            transcript, conversation.session_key, channel="voice", customer_reference=caller
+        )
+    except AIUsageDenied as denied:
+        if denied.reason == "quota_exceeded":
+            if conversation.status != "needs_human":
+                conversation_service.mark_needs_human(
+                    conversation, "Monthly AI reply limit reached"
+                )
+            response.say(LIMIT_REACHED_TEXT, language=language)
+            response.hangup()
+            db.session.commit()
+            return _voice_twiml(response)
+        # "duplicate"/"already_released": an earlier attempt owns this turn.
+        return _voice_duplicate_turn_response(tenant_id, conversation, key, turn, language)
+    except Exception:
+        if gate.reservation_id is None:
+            raise  # before the durable point: 500 + rollback, a retry is clean
+        _recover_after_reservation_failure(gate, engine)
+        response.say(FALLBACK_TEXT, language=language)
+        response.hangup()
+        return _voice_twiml(response)
+
+    try:
+        gate.finalize(engine.ai_outcome, engine.last_usage)
+    except (usage_service.ReservationStateError, usage_service.ReservationNotFound):
+        logger.exception(
+            "Voice AI usage reservation %s (tenant %s) could not be finalised",
+            gate.reservation_id, tenant_id,
+        )
+    except Exception:
+        logger.exception(
+            "Voice AI usage reservation %s (tenant %s) left for stale recovery",
+            gate.reservation_id, tenant_id,
+        )
+        db.session.rollback()
+        bind_rls_tenant(tenant_id)
+        response.say(FALLBACK_TEXT, language=language)
+        response.hangup()
+        return _voice_twiml(response)
+
     response.say(reply, language=language)
-    _gather(response, "Is there anything else I can help you with?")
+    # A new callback URL is generated only after this turn has been handled.
+    _gather(response, "Is there anything else I can help you with?", turn=turn + 1)
     db.session.commit()
     return _voice_twiml(response)
