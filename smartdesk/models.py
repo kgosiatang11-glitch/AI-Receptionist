@@ -228,8 +228,16 @@ class Channel(TimestampMixin, TenantScoped, db.Model):
     tenant = relationship("Tenant")
 
     __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "id",
+            name="uq_channels_tenant_id",
+        ),
         UniqueConstraint("kind", "address", name="uq_channel_kind_address"),
-        CheckConstraint("kind in ('whatsapp','voice','sms')", name="ck_channel_kind"),
+        CheckConstraint(
+            "kind in ('whatsapp','voice','sms')",
+            name="ck_channel_kind",
+      ),
         Index("ix_channels_tenant", "tenant_id"),
     )
 
@@ -257,6 +265,11 @@ class Customer(TimestampMixin, TenantScoped, db.Model):
     tenant = relationship("Tenant")
 
     __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "id",
+            name="uq_customers_tenant_id",
+        ),
         # Phone is unique per tenant, not globally: the same person may be a
         # customer of two different businesses on the platform.
         UniqueConstraint("tenant_id", "phone", name="uq_customer_tenant_phone"),
@@ -285,8 +298,8 @@ class Conversation(TimestampMixin, TenantScoped, db.Model):
     tenant_id = db.Column(
         UUIDType, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
-    customer_id = db.Column(UUIDType, ForeignKey("customers.id", ondelete="SET NULL"))
-    channel_id = db.Column(UUIDType, ForeignKey("channels.id", ondelete="SET NULL"))
+    customer_id = db.Column(UUIDType)
+    channel_id = db.Column(UUIDType)
     channel_kind = db.Column(String(16), nullable=False, default="whatsapp")
     # Stable per-conversation key: the WhatsApp sender, or "voice:<CallSid>".
     session_key = db.Column(String(128), nullable=False)
@@ -308,6 +321,18 @@ class Conversation(TimestampMixin, TenantScoped, db.Model):
     )
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "customer_id"],
+            ["customers.tenant_id", "customers.id"],
+            ondelete="SET NULL",
+            name="fk_conversations_customer_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "channel_id"],
+            ["channels.tenant_id", "channels.id"],
+            ondelete="SET NULL",
+            name="fk_conversations_channel_tenant",
+       ),
         UniqueConstraint("tenant_id", "session_key", name="uq_conversation_session"),
         CheckConstraint(
             "status in ('active','needs_human','closed')", name="ck_conversation_status"
@@ -344,9 +369,7 @@ class Message(TimestampMixin, TenantScoped, db.Model):
     tenant_id = db.Column(
         UUIDType, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
-    conversation_id = db.Column(
-        UUIDType, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
-    )
+    conversation_id = db.Column(UUIDType, nullable=False)
     role = db.Column(String(16), nullable=False)
     body = db.Column(Text, nullable=False)
     # For role='event': 'handoff' | 'lead_captured' | 'booking' | 'takeover'.
@@ -357,6 +380,12 @@ class Message(TimestampMixin, TenantScoped, db.Model):
     conversation = relationship("Conversation", back_populates="messages")
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "conversation_id"],
+            ["conversations.tenant_id", "conversations.id"],
+            ondelete="CASCADE",
+            name="fk_messages_conversation_tenant",
+        ),
         CheckConstraint(
             "role in ('customer','assistant','human_agent','event')",
             name="ck_message_role",
@@ -405,10 +434,8 @@ class Lead(TimestampMixin, TenantScoped, db.Model):
     tenant_id = db.Column(
         UUIDType, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
-    customer_id = db.Column(UUIDType, ForeignKey("customers.id", ondelete="SET NULL"))
-    conversation_id = db.Column(
-        UUIDType, ForeignKey("conversations.id", ondelete="SET NULL")
-    )
+    customer_id = db.Column(UUIDType)
+    conversation_id = db.Column(UUIDType)
     # 'whatsapp' | 'voice' | 'manual'
     source = db.Column(String(32), nullable=False, default="whatsapp")
     interest = db.Column(Text)
@@ -420,6 +447,18 @@ class Lead(TimestampMixin, TenantScoped, db.Model):
     assigned_user = relationship("User")
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "customer_id"],
+            ["customers.tenant_id", "customers.id"],
+            ondelete="SET NULL",
+            name="fk_leads_customer_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "conversation_id"],
+            ["conversations.tenant_id", "conversations.id"],
+            ondelete="SET NULL",
+            name="fk_leads_conversation_tenant",
+        ),
         CheckConstraint(
             "status in ('new','contacted','qualified','converted','lost')",
             name="ck_lead_status",
@@ -457,10 +496,8 @@ class Booking(TimestampMixin, TenantScoped, db.Model):
     tenant_id = db.Column(
         UUIDType, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
-    customer_id = db.Column(UUIDType, ForeignKey("customers.id", ondelete="SET NULL"))
-    conversation_id = db.Column(
-        UUIDType, ForeignKey("conversations.id", ondelete="SET NULL")
-    )
+    customer_id = db.Column(UUIDType)
+    conversation_id = db.Column(UUIDType)
     service = db.Column(String(160))
     starts_at = db.Column(DateTime(timezone=True))
     ends_at = db.Column(DateTime(timezone=True))
@@ -475,6 +512,23 @@ class Booking(TimestampMixin, TenantScoped, db.Model):
     customer = relationship("Customer")
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "customer_id"],
+            ["customers.tenant_id", "customers.id"],
+            ondelete="SET NULL",
+            name="fk_bookings_customer_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "conversation_id"],
+            ["conversations.tenant_id", "conversations.id"],
+            ondelete="SET NULL",
+            name="fk_bookings_conversation_tenant",
+        ),
+            UniqueConstraint(
+            "tenant_id",
+            "id",
+            name="uq_bookings_tenant_id",
+        ),
         CheckConstraint(
             "status in ('pending','confirmed','cancelled','completed')",
             name="ck_booking_status",
@@ -651,12 +705,9 @@ class BookingConversationState(TimestampMixin, TenantScoped, db.Model):
     tenant_id = db.Column(
         UUIDType, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
-    conversation_id = db.Column(
-        UUIDType, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
-    )
-    customer_id = db.Column(UUIDType, ForeignKey("customers.id", ondelete="SET NULL"))
-    booking_id = db.Column(UUIDType, ForeignKey("bookings.id", ondelete="SET NULL"))
-
+    conversation_id = db.Column(UUIDType)
+    customer_id = db.Column(UUIDType)
+    booking_id = db.Column(UUIDType)
     status = db.Column(String(16), nullable=False, default="collecting")
     requested_date = db.Column(db.Date)
     requested_time = db.Column(db.Time)
@@ -672,9 +723,27 @@ class BookingConversationState(TimestampMixin, TenantScoped, db.Model):
     last_failure_reason = db.Column(Text)
 
     conversation = relationship("Conversation")
-    booking = relationship("Booking")
+    booking = relationship("Booking", overlaps="conversation")
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "conversation_id"],
+            ["conversations.tenant_id", "conversations.id"],
+            ondelete="CASCADE",
+            name="fk_booking_states_conversation_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "customer_id"],
+            ["customers.tenant_id", "customers.id"],
+            ondelete="SET NULL",
+            name="fk_booking_states_customer_tenant",
+       ),
+        ForeignKeyConstraint(
+            ["tenant_id", "booking_id"],
+            ["bookings.tenant_id", "bookings.id"],
+            ondelete="SET NULL",
+            name="fk_booking_states_booking_tenant",
+        ),
         CheckConstraint(
             "status in ('collecting','confirming','confirmed','cancelled','failed')",
             name="ck_booking_state_status",

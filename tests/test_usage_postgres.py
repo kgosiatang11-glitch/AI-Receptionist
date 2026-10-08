@@ -207,7 +207,7 @@ class MigrationTests(PostgresUsageCase):
 
     def test_18_migration_chain_applies_from_a_fresh_database(self):
         self.assertEqual(
-            self.scalar("SELECT version_num FROM alembic_version"), "0006_usage_reservations"
+            self.scalar("SELECT version_num FROM alembic_version"), "0007_tenant_scoped_foreign_keys"
         )
         for table in self.TABLES:
             self.assertTrue(self.scalar("SELECT to_regclass(:t) IS NOT NULL", t=f"public.{table}"))
@@ -290,7 +290,7 @@ class MigrationTests(PostgresUsageCase):
             db.engine.dispose()
             self._migrate("upgrade")
         self.assertEqual(
-            self.scalar("SELECT version_num FROM alembic_version"), "0006_usage_reservations"
+            self.scalar("SELECT version_num FROM alembic_version"), "0007_tenant_scoped_foreign_keys"
         )
         self.assertEqual(self.scalar(
             "SELECT monthly_conversation_limit FROM tenants WHERE id = :t", t=tenant_id), 777)
