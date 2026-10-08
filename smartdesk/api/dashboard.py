@@ -28,6 +28,12 @@ from smartdesk.models import (
 from smartdesk.security.rbac import record_audit, require_tenant
 from smartdesk.services import calendar as calendar_service
 from smartdesk.services import conversations as conversation_service
+from smartdesk.services.ownership import (
+    ReferenceNotFound,
+    optional_owned,
+    optional_tenant_user,
+    reference_not_found_response,
+)
 from smartdesk.services.receptionist import OutboundSendError, send_whatsapp_message
 from smartdesk.tenancy import tenant_query
 
@@ -282,7 +288,14 @@ def send_reply(conversation_id: str):
 
     from smartdesk.models import Channel
 
-    channel = db.session.get(Channel, conversation.channel_id) if conversation.channel_id else None
+    # Tenant-scoped even though channel_id comes from our own row: this runs
+    # right before an outbound send, so it must never send via another
+    # tenant's number.
+    channel = (
+        tenant_query(Channel).filter(Channel.id == conversation.channel_id).one_or_none()
+        if conversation.channel_id
+        else None
+    )
     if channel is None:
         return jsonify({"error": "This conversation has no WhatsApp channel on file"}), 409
 
@@ -419,16 +432,30 @@ def update_lead(lead_id: str):
     if lead is None:
         return jsonify({"error": "Lead not found"}), 404
     payload = request.get_json(silent=True) or {}
+
+    # Validate EVERY input and reference first; only then mutate the lead, so
+    # a rejected request leaves no partial change behind.  Users are global
+    # rows, so "belongs to this tenant" means "is a member of this tenant".
+    if "status" in payload and payload["status"] not in (
+        "new", "contacted", "qualified", "converted", "lost"
+    ):
+        return jsonify({"error": "Invalid status"}), 400
+    assignee_id = None
+    if "assigned_user_id" in payload:
+        try:
+            assignee = optional_tenant_user(
+                payload["assigned_user_id"], g.tenant.id, "assigned_user_id"
+            )
+        except ReferenceNotFound as exc:
+            return reference_not_found_response(exc)
+        assignee_id = assignee.id if assignee else None
+
     if "status" in payload:
-        if payload["status"] not in (
-            "new", "contacted", "qualified", "converted", "lost"
-        ):
-            return jsonify({"error": "Invalid status"}), 400
         lead.status = payload["status"]
     if "interest" in payload:
         lead.interest = payload["interest"]
     if "assigned_user_id" in payload:
-        lead.assigned_user_id = payload["assigned_user_id"] or None
+        lead.assigned_user_id = assignee_id
     record_audit("lead.update", "lead", lead.id)
     db.session.commit()
     return jsonify(lead.to_dict())
@@ -469,9 +496,20 @@ def create_booking():
     source = payload.get("source", "staff")
     if source not in ("ai", "staff", "external"):
         return jsonify({"error": "Invalid booking source"}), 400
+
+    # The customer must belong to THIS tenant.  Checked before the Booking
+    # exists, before any flush and before any calendar sync, so a rejected
+    # reference has no side effect at all.
+    try:
+        customer = optional_owned(
+            Customer, payload.get("customer_id"), g.tenant.id, "customer_id"
+        )
+    except ReferenceNotFound as exc:
+        return reference_not_found_response(exc)
+
     booking = Booking(
         tenant_id=g.tenant.id,
-        customer_id=payload.get("customer_id") or None,
+        customer_id=customer.id if customer else None,
         service=payload.get("service"),
         status=payload.get("status", "pending"),
         source=source,
