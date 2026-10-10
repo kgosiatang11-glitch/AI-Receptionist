@@ -17,6 +17,7 @@ import os
 
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
+from werkzeug.exceptions import HTTPException
 
 from smartdesk.config import Config, TestConfig
 from smartdesk.extensions import db, migrate
@@ -44,6 +45,11 @@ def create_app(config_object=None) -> Flask:
 
     db.init_app(app)
     migrate.init_app(app, db)
+
+    # Must be registered before any blueprint that uses ``<uuid_str:...>``.
+    from smartdesk.api.converters import UUIDStrConverter
+
+    app.url_map.converters["uuid_str"] = UUIDStrConverter
     _register_platform(app)
     _register_common(app)
 
@@ -130,6 +136,12 @@ def _register_common(app: Flask) -> None:
 
     @app.errorhandler(Exception)
     def _unhandled(error: Exception):
+        # Routing/HTTP errors (405, 400, 413 ...) keep their own status; only
+        # genuinely unexpected failures become a 500.
+        if isinstance(error, HTTPException) and not request.path.startswith(
+            ("/voice", "/whatsapp")
+        ):
+            return jsonify({"error": error.name}), error.code or 500
         app.logger.exception("Unhandled request error", exc_info=error)
         if app.config.get("SQLALCHEMY_DATABASE_URI"):
             db.session.rollback()

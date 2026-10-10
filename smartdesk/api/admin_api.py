@@ -31,6 +31,9 @@ from smartdesk.models import (
     User,
 )
 from smartdesk.security.rbac import record_audit, require_platform_admin
+from smartdesk.services import membership_lifecycle
+from smartdesk.services.inputs import InvalidInput, parse_strict_bool
+from smartdesk.services.membership_lifecycle import LastOwnerError
 from smartdesk.services.tenant_provisioning import (
     VALID_PLANS,
     VALID_STATUSES,
@@ -115,7 +118,7 @@ def list_all_tenants():
     return jsonify({"items": [_tenant_summary(t) for t in tenants]})
 
 
-@admin_api.get("/admin/tenants/<tenant_id>")
+@admin_api.get("/admin/tenants/<uuid_str:tenant_id>")
 @require_platform_admin
 def get_tenant_detail(tenant_id: str):
     tenant = db.session.get(Tenant, tenant_id)
@@ -160,7 +163,7 @@ def create_tenant():
     return jsonify(_tenant_summary(tenant)), 201
 
 
-@admin_api.patch("/admin/tenants/<tenant_id>")
+@admin_api.patch("/admin/tenants/<uuid_str:tenant_id>")
 @require_platform_admin
 def update_tenant(tenant_id: str):
     tenant = db.session.get(Tenant, tenant_id)
@@ -176,7 +179,7 @@ def update_tenant(tenant_id: str):
             {
                 "error": (
                     "monthly_conversation_limit is not changed here; use "
-                    "PATCH /admin/tenants/<tenant_id>/monthly-limit"
+                    "PATCH /admin/tenants/<uuid_str:tenant_id>/monthly-limit"
                 )
             }
         ), 400
@@ -206,7 +209,7 @@ def update_tenant(tenant_id: str):
     return jsonify(_tenant_summary(tenant))
 
 
-@admin_api.patch("/admin/tenants/<tenant_id>/monthly-limit")
+@admin_api.patch("/admin/tenants/<uuid_str:tenant_id>/monthly-limit")
 @require_platform_admin
 def update_tenant_monthly_limit(tenant_id: str):
     """Set one tenant's monthly conversation limit (platform admin only).
@@ -256,7 +259,7 @@ def update_tenant_monthly_limit(tenant_id: str):
 # ---------------------------------------------------------------------------
 
 
-@admin_api.post("/admin/tenants/<tenant_id>/owner")
+@admin_api.post("/admin/tenants/<uuid_str:tenant_id>/owner")
 @require_platform_admin
 def link_owner(tenant_id: str):
     tenant = db.session.get(Tenant, tenant_id)
@@ -390,29 +393,6 @@ def list_all_channels():
 # ---------------------------------------------------------------------------
 
 
-def _last_owner_tenants(user_id: str) -> list[str]:
-    """Tenant names where this user is the *only* owner.
-
-    Used to block an action (deactivation) that would leave a tenant with
-    no owner at all -- the same protection the tenant-facing member-removal
-    endpoints apply, kept in sync here rather than duplicated ad hoc.
-    """
-    owner_rows = (
-        db.session.query(Tenant.id, Tenant.name)
-        .join(Membership, Membership.tenant_id == Tenant.id)
-        .filter(Membership.user_id == user_id, Membership.role == ROLE_OWNER)
-        .all()
-    )
-    names = []
-    for tenant_id, tenant_name in owner_rows:
-        owner_count = Membership.query.filter_by(
-            tenant_id=tenant_id, role=ROLE_OWNER
-        ).count()
-        if owner_count <= 1:
-            names.append(tenant_name)
-    return names
-
-
 def _user_summary(user: User) -> dict:
     rows = (
         db.session.query(Membership, Tenant)
@@ -447,7 +427,7 @@ def list_users():
     return jsonify({"items": [_user_summary(u) for u in users]})
 
 
-@admin_api.patch("/admin/users/<user_id>")
+@admin_api.patch("/admin/users/<uuid_str:user_id>")
 @require_platform_admin
 def update_user(user_id: str):
     user = db.session.get(User, user_id)
@@ -458,33 +438,53 @@ def update_user(user_id: str):
     actor = g.principal.user
     changes = {}
 
-    if "is_platform_admin" in payload:
-        new_value = bool(payload["is_platform_admin"])
-        if not new_value and user.id == actor.id:
+    # Parse EVERY flag strictly before changing anything: ``bool("false")`` is
+    # True, so a request body is never coerced with ``bool()`` (C6).
+    try:
+        new_admin = (
+            parse_strict_bool(payload["is_platform_admin"], "is_platform_admin")
+            if "is_platform_admin" in payload
+            else None
+        )
+        new_active = (
+            parse_strict_bool(payload["is_active"], "is_active")
+            if "is_active" in payload
+            else None
+        )
+    except InvalidInput as exc:
+        return jsonify({"error": str(exc), "field": exc.field}), 400
+
+    if new_admin is not None:
+        if not new_admin and user.id == actor.id:
             return jsonify(
                 {"error": "You cannot remove your own platform administrator access."}
             ), 400
-        user.is_platform_admin = new_value
-        changes["is_platform_admin"] = new_value
+        user.is_platform_admin = new_admin
+        changes["is_platform_admin"] = new_admin
 
-    if "is_active" in payload:
-        new_value = bool(payload["is_active"])
-        if not new_value:
+    if new_active is not None:
+        if not new_active:
             if user.id == actor.id:
                 return jsonify({"error": "You cannot deactivate your own account."}), 400
-            blocking = _last_owner_tenants(user.id)
-            if blocking:
+            try:
+                # Locks the tenants this user owns, refuses to orphan one, and
+                # clears the user's lead/conversation assignments everywhere.
+                membership_lifecycle.deactivate_user(user)
+            except LastOwnerError as exc:
+                db.session.rollback()
                 return jsonify(
                     {
                         "error": (
-                            "This user is the only owner of "
-                            f"{', '.join(blocking)}. Assign another owner "
+                            "This user is the only active owner of "
+                            f"{', '.join(exc.tenant_names)}. Assign another owner "
                             "there first."
-                        )
+                        ),
+                        "code": "last_owner",
                     }
                 ), 400
-        user.is_active = new_value
-        changes["is_active"] = new_value
+        else:
+            user.is_active = True
+        changes["is_active"] = new_active
 
     if not changes:
         return jsonify({"error": "Nothing to update"}), 400

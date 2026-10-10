@@ -24,14 +24,23 @@ import hashlib
 import hmac
 import json
 import logging
+import secrets
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from flask import current_app
+from sqlalchemy.exc import IntegrityError
 
 from smartdesk.extensions import db
-from smartdesk.models import Booking, CalendarConnection, Tenant
+from smartdesk.models import (
+    ROLE_OWNER,
+    Booking,
+    CalendarConnection,
+    Membership,
+    Tenant,
+    User,
+)
 from smartdesk.tenancy import tenant_access_denial, tenant_is_active_now
 
 logger = logging.getLogger(__name__)
@@ -66,9 +75,33 @@ def _state_secret() -> bytes:
     return secret.encode("utf-8")
 
 
+#: Key under ``Tenant.settings`` holding the single pending OAuth flow.
+_PENDING_KEY = "calendar_oauth_pending"
+
+
 def sign_state(tenant_id: str, user_id: str) -> str:
+    """Mint the signed OAuth ``state`` for a flow started by ``user_id``.
+
+    C6: the state also carries a random nonce, and the SAME nonce is stored
+    server-side as the tenant's one pending flow.  The callback consumes it, so
+    a captured state cannot be replayed, and starting a new flow supersedes any
+    earlier one.  (No new table: it lives in ``Tenant.settings``.)
+    """
+    nonce = secrets.token_urlsafe(16)
+    tenant = db.session.get(Tenant, tenant_id)
+    if tenant is not None:
+        settings = dict(tenant.settings or {})
+        settings[_PENDING_KEY] = {"nonce": nonce, "user_id": user_id}
+        tenant.settings = settings
+        db.session.commit()
+
     payload = json.dumps(
-        {"tenant_id": tenant_id, "user_id": user_id, "issued_at": time.time()}
+        {
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "nonce": nonce,
+            "issued_at": time.time(),
+        }
     ).encode("utf-8")
     body = base64.urlsafe_b64encode(payload).decode("ascii")
     signature = hmac.new(_state_secret(), body.encode("ascii"), hashlib.sha256).hexdigest()
@@ -137,6 +170,57 @@ def build_authorize_url(tenant_id: str, user_id: str) -> str:
     return authorize_url
 
 
+def _consume_pending_flow(tenant: Tenant, payload: dict) -> None:
+    """Atomically take the tenant's pending flow, or raise ``InvalidOAuthState``.
+
+    The tenant row is locked (``FOR NO KEY UPDATE``) so two simultaneous
+    callbacks carrying the same state cannot both succeed.  The nonce is spent
+    (and committed) BEFORE the code exchange: a failed exchange needs a fresh
+    "Connect" click rather than leaving a reusable state behind.
+    """
+    db.session.execute(
+        db.select(Tenant.id).where(Tenant.id == tenant.id).with_for_update(key_share=True)
+    ).first()
+    db.session.refresh(tenant)
+    settings = dict(tenant.settings or {})
+    pending = settings.get(_PENDING_KEY) or {}
+    nonce = str(payload.get("nonce") or "")
+    expected = str(pending.get("nonce") or "")
+    if (
+        not nonce
+        or not expected
+        or not hmac.compare_digest(nonce, expected)
+        or pending.get("user_id") != payload.get("user_id")
+    ):
+        db.session.rollback()
+        raise InvalidOAuthState("This connection link was already used or replaced")
+    settings.pop(_PENDING_KEY, None)
+    tenant.settings = settings
+    db.session.commit()
+
+
+def _revalidate_initiator(tenant_id: str, user_id) -> None:
+    """The person who started the flow must STILL be allowed to finish it.
+
+    The state is valid for ten minutes; in that window the user may have been
+    removed from the tenant, demoted, deactivated or deleted.  Connecting a
+    calendar needs an active owner of the tenant (as ``/calendar/connect``
+    does) -- or an active platform administrator doing support work.
+    """
+    if not isinstance(user_id, str) or not user_id:
+        raise CalendarError("This connection link is no longer valid")
+    user = db.session.get(User, user_id)
+    if user is None or not user.is_active:
+        raise CalendarError("This connection link is no longer valid")
+    if user.is_platform_admin:
+        return
+    membership = Membership.query.filter_by(
+        tenant_id=tenant_id, user_id=user.id
+    ).one_or_none()
+    if membership is None or membership.role != ROLE_OWNER:
+        raise CalendarError("This connection link is no longer valid")
+
+
 def complete_oauth_callback(code: str, state: str) -> CalendarConnection:
     """Exchange the authorization code and persist the tenant's connection."""
     payload = verify_state(state)  # raises InvalidOAuthState if tampered/expired
@@ -147,8 +231,13 @@ def complete_oauth_callback(code: str, state: str) -> CalendarConnection:
     # ``require_tenant``, so it needs its own (same-policy) suspension check:
     # a tenant suspended after starting the flow must not gain a calendar
     # connection.  Nothing is exchanged or stored.
-    if tenant_access_denial(db.session.get(Tenant, tenant_id)) is not None:
+    tenant = db.session.get(Tenant, tenant_id)
+    if tenant_access_denial(tenant) is not None:
         raise CalendarError("This business account is not active")
+
+    # C6: single use, then re-check that the initiator is still entitled.
+    _consume_pending_flow(tenant, payload)
+    _revalidate_initiator(tenant_id, user_id)
 
     from google_auth_oauthlib.flow import Flow
 
@@ -180,7 +269,11 @@ def complete_oauth_callback(code: str, state: str) -> CalendarConnection:
     connection.connected_email = email
     connection.connected_by_user_id = user_id
     connection.last_sync_error = None
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError as exc:  # e.g. the user was deleted mid-flow
+        db.session.rollback()
+        raise CalendarError("Could not save the calendar connection") from exc
     return connection
 
 

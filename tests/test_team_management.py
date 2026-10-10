@@ -1,9 +1,10 @@
 """Tests for tenant-facing member management (smartdesk/api/config_api.py:
 POST/PATCH/DELETE /business/members).
 
-Covers: owner-only access, adding an existing registered user by email
-(never inventing an account or sending a fake invite), changing a member's
-role, removing a member, and the two protections the task required:
+Covers: owner-only access, inviting a person by email (C6: an invitation, never
+an automatic membership -- see tests/c6_checks.py for the full invitation
+lifecycle), changing a member's role, removing a member, and the two
+protections the task required:
 
 * the last owner of a tenant can never be demoted or removed, so a tenant
   can never end up with zero owners;
@@ -25,26 +26,34 @@ from tests.test_multitenant import MultiTenantTestCase  # noqa: E402
 
 
 class AddMemberTests(MultiTenantTestCase):
-    def test_owner_can_add_an_existing_user_by_email(self):
+    def test_adding_an_existing_user_creates_an_invitation_not_a_membership(self):
+        """C6: supplying a registered user's email must NOT attach them."""
+        before = Membership.query.count()
         response = self.client.post(
             "/api/v1/business/members",
             headers=self.auth(self.padel_user, self.padel),
             json={"email": self.salon_user.email, "role": "manager"},
         )
         self.assertEqual(response.status_code, 201, response.get_json())
-        self.assertEqual(response.get_json()["role"], "manager")
-        membership = Membership.query.filter_by(
-            tenant_id=self.padel.id, user_id=self.salon_user.id
-        ).one()
-        self.assertEqual(membership.role, "manager")
+        body = response.get_json()
+        self.assertEqual(body["invitation"]["role"], "manager")
+        self.assertEqual(body["invitation"]["status"], "pending")
+        self.assertTrue(body["invitation_code"])
+        self.assertEqual(Membership.query.count(), before)
+        self.assertIsNone(
+            Membership.query.filter_by(
+                tenant_id=self.padel.id, user_id=self.salon_user.id
+            ).one_or_none()
+        )
 
-    def test_adding_an_unregistered_email_is_a_clean_404_not_a_fake_invite(self):
+    def test_inviting_an_unregistered_email_is_accepted_without_creating_an_account(self):
         response = self.client.post(
             "/api/v1/business/members",
             headers=self.auth(self.padel_user, self.padel),
             json={"email": "nobody@example.com", "role": "viewer"},
         )
-        self.assertEqual(response.status_code, 404)
+        # Same outcome as for a registered address: nothing reveals which it is.
+        self.assertEqual(response.status_code, 201)
         self.assertIsNone(User.query.filter_by(email="nobody@example.com").one_or_none())
 
     def test_cannot_add_the_same_person_twice(self):
