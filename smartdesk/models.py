@@ -194,6 +194,80 @@ class Membership(TimestampMixin, TenantScoped, db.Model):
     )
 
 
+#: Roles that may be stored in ``assigned_user_id`` (C6).  A viewer is read-only
+#: and so is never an assignee.  Deliberately an explicit allow-list: adding a
+#: role here is a policy decision, not a side effect.
+ASSIGNABLE_ROLES = (ROLE_AGENT, ROLE_OWNER)
+
+INVITATION_STATUSES = ("pending", "accepted", "revoked")
+
+
+class Invitation(TimestampMixin, TenantScoped, db.Model):
+    """A pending offer of membership in ONE tenant to ONE email address (C6).
+
+    Replaces "owner adds any registered user by email".  Creating an invitation
+    attaches nobody to the tenant: the invited person must authenticate with a
+    verified email equal to ``email`` and present the secret token.  Only a
+    SHA-256 of the token is stored, so a database read cannot be used to accept
+    an invitation.
+
+    No row-level security on this table (like ``tenants`` / ``users``): it is
+    looked up by the hash of a secret before any tenant is known.  Tenant-facing
+    endpoints filter by tenant explicitly (see migration 0008).
+    """
+
+    __tablename__ = "membership_invitations"
+
+    id = db.Column(UUIDType, primary_key=True, default=_uuid)
+    tenant_id = db.Column(
+        UUIDType, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    email = db.Column(String(160), nullable=False)
+    role = db.Column(String(16), nullable=False, default=ROLE_VIEWER)
+    token_hash = db.Column(String(64), nullable=False)
+    status = db.Column(String(16), nullable=False, default="pending")
+    expires_at = db.Column(DateTime(timezone=True), nullable=False)
+    invited_by_user_id = db.Column(
+        UUIDType, ForeignKey("users.id", ondelete="SET NULL")
+    )
+    accepted_by_user_id = db.Column(
+        UUIDType, ForeignKey("users.id", ondelete="SET NULL")
+    )
+    accepted_at = db.Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_membership_invitation_token"),
+        CheckConstraint(
+            "role in ('viewer','agent','manager','owner')",
+            name="ck_membership_invitation_role",
+        ),
+        CheckConstraint(
+            "status in ('pending','accepted','revoked')",
+            name="ck_membership_invitation_status",
+        ),
+        Index("ix_membership_invitations_tenant", "tenant_id", "status"),
+        # At most one live invitation per (tenant, email).
+        Index(
+            "uq_membership_invitation_pending",
+            "tenant_id",
+            "email",
+            unique=True,
+            postgresql_where=sa.text("status = 'pending'"),
+            sqlite_where=sa.text("status = 'pending'"),
+        ),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "email": self.email,
+            "role": self.role,
+            "status": self.status,
+            "expires_at": _iso(self.expires_at),
+            "created_at": _iso(self.created_at),
+        }
+
+
 # ---------------------------------------------------------------------------
 # Channels — the tenant resolution table
 # ---------------------------------------------------------------------------
@@ -333,6 +407,17 @@ class Conversation(TimestampMixin, TenantScoped, db.Model):
             ondelete="SET NULL",
             name="fk_conversations_channel_tenant",
        ),
+        # C6: an assignee must be a member of THIS tenant.  Users are global
+        # rows, so the tenant boundary for a user is ``memberships``.  See
+        # ``ASSIGNEE_FK_ONDELETE`` for the ON DELETE rule.
+        ForeignKeyConstraint(
+            ["tenant_id", "assigned_user_id"],
+            ["memberships.tenant_id", "memberships.user_id"],
+            ondelete="SET NULL",
+            name="fk_conversations_assignee_member",
+        ),
+        # Target of the composite FKs from messages/leads/bookings (0007).
+        UniqueConstraint("tenant_id", "id", name="uq_conversations_tenant_id"),
         UniqueConstraint("tenant_id", "session_key", name="uq_conversation_session"),
         CheckConstraint(
             "status in ('active','needs_human','closed')", name="ck_conversation_status"
@@ -458,6 +543,13 @@ class Lead(TimestampMixin, TenantScoped, db.Model):
             ["conversations.tenant_id", "conversations.id"],
             ondelete="SET NULL",
             name="fk_leads_conversation_tenant",
+        ),
+        # C6: see Conversation.  Membership (not users) is the tenant boundary.
+        ForeignKeyConstraint(
+            ["tenant_id", "assigned_user_id"],
+            ["memberships.tenant_id", "memberships.user_id"],
+            ondelete="SET NULL",
+            name="fk_leads_assignee_member",
         ),
         CheckConstraint(
             "status in ('new','contacted','qualified','converted','lost')",
@@ -1020,6 +1112,33 @@ class CalendarConnection(TimestampMixin, TenantScoped, db.Model):
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+# ---------------------------------------------------------------------------
+# C6: ON DELETE rule for the (tenant_id, assigned_user_id) -> memberships FKs
+# ---------------------------------------------------------------------------
+#
+# Deleting a membership must clear ``assigned_user_id`` but must NEVER try to
+# NULL ``tenant_id`` (it is NOT NULL, and plain ``SET NULL`` on a composite FK
+# nulls every referencing column).  PostgreSQL 15+ supports the column-list
+# form ``SET NULL (assigned_user_id)``; SQLite (used only by the unit-test
+# suite, which does not enforce FKs) cannot parse it.  Migration 0008 is the
+# authority for real databases; this hook makes ``create_all`` on PostgreSQL
+# match it while keeping the SQLite DDL valid.
+
+ASSIGNEE_FK_ONDELETE_PG = "SET NULL (assigned_user_id)"
+_ASSIGNEE_FK_NAMES = ("fk_leads_assignee_member", "fk_conversations_assignee_member")
+
+
+def _assignee_fk_ondelete(target, connection, **_kw) -> None:
+    rule = ASSIGNEE_FK_ONDELETE_PG if connection.dialect.name == "postgresql" else "SET NULL"
+    for constraint in target.foreign_key_constraints:
+        if constraint.name in _ASSIGNEE_FK_NAMES:
+            constraint.ondelete = rule
+
+
+sa.event.listen(Lead.__table__, "before_create", _assignee_fk_ondelete)
+sa.event.listen(Conversation.__table__, "before_create", _assignee_fk_ondelete)
 
 
 #: Every tenant-owned table, used by the RLS migration and the isolation tests.

@@ -28,10 +28,12 @@ from smartdesk.models import (
 from smartdesk.security.rbac import record_audit, require_tenant
 from smartdesk.services import calendar as calendar_service
 from smartdesk.services import conversations as conversation_service
+from smartdesk.services.assignments import is_assignable_member
+from smartdesk.services.inputs import InvalidInput, parse_strict_bool
 from smartdesk.services.ownership import (
     ReferenceNotFound,
+    optional_assignable_user,
     optional_owned,
-    optional_tenant_user,
     reference_not_found_response,
 )
 from smartdesk.services.receptionist import OutboundSendError, send_whatsapp_message
@@ -204,7 +206,7 @@ def list_conversations():
     )
 
 
-@dashboard_api.get("/conversations/<conversation_id>")
+@dashboard_api.get("/conversations/<uuid_str:conversation_id>")
 @require_tenant()
 def get_conversation(conversation_id: str):
     conversation = tenant_query(Conversation).filter(
@@ -231,32 +233,66 @@ def get_conversation(conversation_id: str):
     )
 
 
-@dashboard_api.post("/conversations/<conversation_id>/takeover")
+@dashboard_api.post("/conversations/<uuid_str:conversation_id>/takeover")
 @require_tenant(ROLE_AGENT)
 def takeover(conversation_id: str):
-    """Human takeover. O'Brien stops replying while this is set."""
+    """Human takeover / release. O'Brien stops replying while this is set.
+
+    ``assigned_user_id`` records the tenant member who owns the conversation
+    and, since C6, only ever holds an active agent/owner MEMBER of this tenant.
+    A platform administrator supporting a tenant (not a member) may take over
+    and release, but is never written there: they are recorded as the actor in
+    the audit log and in the conversation timeline instead.
+    """
     conversation = tenant_query(Conversation).filter(
         Conversation.id == conversation_id
     ).one_or_none()
     if conversation is None:
         return jsonify({"error": "Conversation not found"}), 404
 
-    enabled = bool((request.get_json(silent=True) or {}).get("enabled", True))
+    try:
+        enabled = parse_strict_bool(
+            (request.get_json(silent=True) or {}).get("enabled", True), "enabled"
+        )
+    except InvalidInput as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    actor = g.principal.user
+    actor_is_member = is_assignable_member(actor.id, g.tenant.id)
+    acting_as_platform_admin = bool(g.principal.is_platform_admin) and not actor_is_member
+
     conversation.human_takeover = enabled
-    conversation.assigned_user_id = g.principal.user.id if enabled else None
+    if enabled:
+        # Only a qualifying member becomes the assignee; otherwise whatever
+        # valid assignment already exists is left exactly as it was.
+        if actor_is_member:
+            conversation.assigned_user_id = actor.id
+    else:
+        conversation.assigned_user_id = None
+
+    verb = "took over" if enabled else "released"
+    who = f"{actor.email} (SmartDesk support)" if acting_as_platform_admin else actor.email
     conversation_service.record_event(
         conversation,
         "takeover",
-        f"{g.principal.user.email} {'took over' if enabled else 'released'} this conversation",
+        f"{who} {verb} this conversation",
+        actor_user_id=actor.id,
+        actor_email=actor.email,
+        acting_as_platform_admin=acting_as_platform_admin,
     )
     record_audit(
-        "conversation.takeover", "conversation", conversation.id, enabled=enabled
+        "conversation.takeover",
+        "conversation",
+        conversation.id,
+        enabled=enabled,
+        acting_as_platform_admin=acting_as_platform_admin,
+        assigned_user_id=conversation.assigned_user_id,
     )
     db.session.commit()
     return jsonify(conversation.to_dict())
 
 
-@dashboard_api.post("/conversations/<conversation_id>/reply")
+@dashboard_api.post("/conversations/<uuid_str:conversation_id>/reply")
 @require_tenant(ROLE_AGENT)
 def send_reply(conversation_id: str):
     """Send a staff reply into a conversation that a human has taken over.
@@ -316,7 +352,7 @@ def send_reply(conversation_id: str):
     return jsonify(conversation.to_dict()), 201
 
 
-@dashboard_api.post("/conversations/<conversation_id>/status")
+@dashboard_api.post("/conversations/<uuid_str:conversation_id>/status")
 @require_tenant(ROLE_AGENT)
 def set_status(conversation_id: str):
     conversation = tenant_query(Conversation).filter(
@@ -374,7 +410,7 @@ def list_customers():
     return jsonify({"items": items, "total": total, "page": page})
 
 
-@dashboard_api.get("/customers/<customer_id>")
+@dashboard_api.get("/customers/<uuid_str:customer_id>")
 @require_tenant()
 def get_customer(customer_id: str):
     customer = tenant_query(Customer).filter(Customer.id == customer_id).one_or_none()
@@ -425,7 +461,7 @@ def list_leads():
     return jsonify({"items": [l.to_dict() for l in rows], "total": total, "page": page})
 
 
-@dashboard_api.patch("/leads/<lead_id>")
+@dashboard_api.patch("/leads/<uuid_str:lead_id>")
 @require_tenant(ROLE_AGENT)
 def update_lead(lead_id: str):
     lead = tenant_query(Lead).filter(Lead.id == lead_id).one_or_none()
@@ -435,7 +471,8 @@ def update_lead(lead_id: str):
 
     # Validate EVERY input and reference first; only then mutate the lead, so
     # a rejected request leaves no partial change behind.  Users are global
-    # rows, so "belongs to this tenant" means "is a member of this tenant".
+    # rows, so "belongs to this tenant" means "is an ACTIVE agent/owner MEMBER
+    # of this tenant" (C6) -- see services/assignments.py.
     if "status" in payload and payload["status"] not in (
         "new", "contacted", "qualified", "converted", "lost"
     ):
@@ -443,7 +480,7 @@ def update_lead(lead_id: str):
     assignee_id = None
     if "assigned_user_id" in payload:
         try:
-            assignee = optional_tenant_user(
+            assignee = optional_assignable_user(
                 payload["assigned_user_id"], g.tenant.id, "assigned_user_id"
             )
         except ReferenceNotFound as exc:
@@ -575,7 +612,7 @@ def create_booking():
     return jsonify(response), 201
 
 
-@dashboard_api.post("/bookings/<booking_id>/status")
+@dashboard_api.post("/bookings/<uuid_str:booking_id>/status")
 @require_tenant(ROLE_AGENT)
 def update_booking_status(booking_id: str):
     booking = tenant_query(Booking).filter(Booking.id == booking_id).one_or_none()

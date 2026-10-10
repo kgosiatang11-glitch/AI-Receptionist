@@ -19,6 +19,8 @@ invoke AI" is proven there, by counting the fake client's calls.
 from __future__ import annotations
 
 import os
+import uuid
+import re
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -172,7 +174,8 @@ class SuspendedApiAccessTests(SuspensionCase):
             view = self.app.view_functions[rule.endpoint]
             if not getattr(view, "requires_tenant", False):
                 continue
-            path = rule.rule.replace("<conversation_id>", "x")
+            # ``<uuid_str:...>`` segments only match a real UUID (C6).
+            path = re.sub(r"<uuid_str:[^>]+>", str(uuid.uuid4()), rule.rule)
             for converter in rule.arguments:
                 path = path.replace(f"<{converter}>", "x")
             for method in sorted(rule.methods - {"HEAD", "OPTIONS"}):

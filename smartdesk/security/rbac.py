@@ -67,7 +67,7 @@ def role_at_least(role: str | None, minimum: str) -> bool:
         return False
 
 
-def _sync_user(claims) -> User:
+def _sync_user(claims, email_verified: bool = False) -> User:
     """Find or create the platform-side profile for a Supabase subject.
 
     Users are matched by the verified Supabase subject id (``sub``) only.
@@ -126,8 +126,17 @@ def _sync_user(claims) -> User:
 
     # Bootstrap: emails listed in PLATFORM_ADMIN_EMAILS are platform staff.
     # The flag is persisted in our DB and is the only source of truth for it.
-    if claims.email and claims.email in current_app.config.get(
-        "PLATFORM_ADMIN_EMAILS", ()
+    #
+    # C6: an email *claim* proves nothing on its own -- anyone can register an
+    # address nobody has confirmed yet.  The bootstrap therefore only applies
+    # to an identity whose email Supabase has CONFIRMED (``email_verified``,
+    # read from ``auth.users`` by ``_is_email_confirmed``, never from the token).
+    # An unverified identity is simply not promoted; it is promoted on a later
+    # request once it has confirmed the address.
+    if (
+        email_verified
+        and claims.email
+        and claims.email in current_app.config.get("PLATFORM_ADMIN_EMAILS", ())
     ):
         user.is_platform_admin = True
 
@@ -184,15 +193,18 @@ def _is_email_confirmed(claims) -> bool:
 def load_principal() -> Principal:
     token = bearer_token_from_header(request.headers.get("Authorization"))
     claims = decode_token(token)
-    user = _sync_user(claims)
+    email_verified = _is_email_confirmed(claims)
+    user = _sync_user(claims, email_verified=email_verified)
     roles = {
         m.tenant_id: m.role
         for m in Membership.query.filter_by(user_id=user.id).all()
     }
     return Principal(
         user=user,
-        is_platform_admin=user.is_platform_admin,
-        email_verified=_is_email_confirmed(claims),
+        # C6: platform-admin status only counts for a verified identity.  (The
+        # stored flag is untouched; it simply grants nothing until verified.)
+        is_platform_admin=bool(user.is_platform_admin) and email_verified,
+        email_verified=email_verified,
         roles=roles,
     )
 
@@ -283,7 +295,9 @@ def require_platform_admin(view):
     @functools.wraps(view)
     def wrapper(*args, **kwargs):
         principal = load_principal()
-        if not principal.is_platform_admin:
+        # Same message for "not an admin" and "admin with unconfirmed email":
+        # the response does not say which of the two it was.
+        if not principal.is_platform_admin or not principal.email_verified:
             raise AuthError("Platform administrator access required", status=403)
         g.principal = principal
         return view(*args, **kwargs)

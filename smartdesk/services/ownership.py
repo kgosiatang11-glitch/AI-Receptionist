@@ -122,13 +122,43 @@ def optional_tenant_user(user_id, tenant_id: str, field: str = "assigned_user_id
     return require_tenant_user(user_id, tenant_id, field)
 
 
+def require_assignable_user(user_id, tenant_id: str, field: str = "assigned_user_id") -> User:
+    """Load a user who may be stored in ``assigned_user_id`` of ``tenant_id`` (C6).
+
+    Stricter than :func:`require_tenant_user`: the user must be an *active*
+    member with an assignable role (agent / owner).  Non-members -- including
+    platform administrators --, members of other tenants, viewers, managers
+    (not in :data:`~smartdesk.models.ASSIGNABLE_ROLES`) and deactivated users
+    all raise the same :class:`ReferenceNotFound`, so the response never says
+    *why* an id was refused.
+    """
+    from smartdesk.services.assignments import assignable_user_query
+
+    normalized = normalize_reference_id(user_id, field)
+    user = db.session.execute(
+        assignable_user_query(tenant_id).where(User.id == normalized)
+    ).scalar_one_or_none()
+    if user is None:
+        raise ReferenceNotFound(field)
+    return user
+
+
+def optional_assignable_user(user_id, tenant_id: str, field: str = "assigned_user_id"):
+    """``None`` / ``""`` clear the assignment; anything else must be assignable."""
+    if user_id is None or user_id == "":
+        return None
+    return require_assignable_user(user_id, tenant_id, field)
+
+
 __all__ = [
     "REFERENCE_NOT_FOUND",
     "ReferenceNotFound",
     "normalize_reference_id",
+    "optional_assignable_user",
     "optional_owned",
     "optional_tenant_user",
     "reference_not_found_response",
+    "require_assignable_user",
     "require_owned",
     "require_tenant_user",
 ]

@@ -174,6 +174,12 @@ def grant_command(email, tenant_slug, role, platform_admin) -> None:
             membership = Membership(tenant_id=tenant.id, user_id=user.id)
             db.session.add(membership)
         membership.role = role
+        # C6: a role that cannot hold assignments must not keep any.
+        from smartdesk.models import ASSIGNABLE_ROLES
+        from smartdesk.services.assignments import clear_assignments
+
+        if role not in ASSIGNABLE_ROLES and membership.id is not None:
+            clear_assignments(tenant.id, user.id)
         click.echo(f"{email} is now {role} of {tenant.name}.")
 
     db.session.commit()

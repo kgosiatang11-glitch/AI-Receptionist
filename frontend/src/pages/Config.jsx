@@ -569,6 +569,7 @@ function TeamCard({ data, refresh, can }) {
   const [role, setRole] = useState("viewer");
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState(null);
+  const [inviteCode, setInviteCode] = useState(null);
   const [rowBusy, setRowBusy] = useState(null);
   const [rowError, setRowError] = useState(null);
   const isOwner = can("owner");
@@ -579,7 +580,11 @@ function TeamCard({ data, refresh, can }) {
     setAdding(true);
     setAddError(null);
     try {
-      await call("/business/members", { method: "POST", body: { email: email.trim(), role } });
+      const result = await call("/business/invitations", {
+        method: "POST",
+        body: { email: email.trim(), role },
+      });
+      setInviteCode({ email: email.trim(), code: result.invitation_code });
       setEmail("");
       setRole("viewer");
       refresh();
@@ -659,9 +664,16 @@ function TeamCard({ data, refresh, can }) {
       {isOwner && (
         <form onSubmit={addMember} style={{ marginTop: 16 }}>
           <p className="sd-hint" style={{ marginBottom: 8 }}>
-            They must already have a SmartDesk account (sign up via the login
-            page) before you can add them here.
+            Invite someone by email. You will get a one-time invitation code to
+            share with them; it works only for an account verified with that
+            email address and expires in 7 days.
           </p>
+          {inviteCode && (
+            <p className="sd-hint" style={{ marginBottom: 8 }}>
+              Invitation for {inviteCode.email} — share this code now, it is not shown again:{" "}
+              <code>{inviteCode.code}</code>
+            </p>
+          )}
           <div className="sd-grid sd-grid-2">
             <div className="sd-field">
               <label className="sd-label">Email</label>
@@ -678,7 +690,7 @@ function TeamCard({ data, refresh, can }) {
           </div>
           <ErrorNotice message={addError} />
           <button className="sd-btn" disabled={adding || !email.trim()}>
-            {adding ? "Adding…" : "Add member"}
+            {adding ? "Inviting…" : "Invite member"}
           </button>
         </form>
       )}
