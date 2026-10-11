@@ -666,7 +666,9 @@ function TeamCard({ data, refresh, can }) {
           <p className="sd-hint" style={{ marginBottom: 8 }}>
             Invite someone by email. You will get a one-time invitation code to
             share with them; it works only for an account verified with that
-            email address and expires in 7 days.
+            email address and expires in 7 days. They enter it on the
+            "Accept an invitation" page ({window.location.origin}/accept-invitation)
+            after signing in.
           </p>
           {inviteCode && (
             <p className="sd-hint" style={{ marginBottom: 8 }}>

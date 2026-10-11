@@ -31,9 +31,10 @@ from smartdesk.models import (
     User,
 )
 from smartdesk.security.rbac import record_audit, require_platform_admin
-from smartdesk.services import membership_lifecycle
+from smartdesk.services import membership_lifecycle, platform_admins
 from smartdesk.services.inputs import InvalidInput, parse_strict_bool
 from smartdesk.services.membership_lifecycle import LastOwnerError
+from smartdesk.services.platform_admins import LastPlatformAdminError
 from smartdesk.services.tenant_provisioning import (
     VALID_PLANS,
     VALID_STATUSES,
@@ -454,18 +455,43 @@ def update_user(user_id: str):
     except InvalidInput as exc:
         return jsonify({"error": str(exc), "field": exc.field}), 400
 
-    if new_admin is not None:
-        if not new_admin and user.id == actor.id:
+    # Self-lockout protection: decided from ids alone, before anything is locked
+    # or changed.  (Rules and messages are unchanged from before the invariant.)
+    if new_admin is False and user.id == actor.id:
+        return jsonify(
+            {"error": "You cannot remove your own platform administrator access."}
+        ), 400
+    if new_active is False and user.id == actor.id:
+        return jsonify({"error": "You cannot deactivate your own account."}), 400
+
+    # Last-administrator protection.  Only a change that can REDUCE the eligible
+    # set (demote / deactivate) needs it; it runs under a platform-wide lock in a
+    # fresh transaction so two administrators cannot remove each other
+    # concurrently.  See smartdesk/services/platform_admins.py.
+    if new_admin is False or new_active is False:
+        platform_admins.begin_exclusive_change()
+        try:
+            platform_admins.ensure_admin_remains(
+                user, new_admin=new_admin, new_active=new_active
+            )
+        except LastPlatformAdminError:
+            db.session.rollback()
             return jsonify(
-                {"error": "You cannot remove your own platform administrator access."}
+                {
+                    "error": (
+                        "This is the last active, verified platform administrator. "
+                        "Promote another administrator first."
+                    ),
+                    "code": "last_platform_admin",
+                }
             ), 400
+
+    if new_admin is not None:
         user.is_platform_admin = new_admin
         changes["is_platform_admin"] = new_admin
 
     if new_active is not None:
         if not new_active:
-            if user.id == actor.id:
-                return jsonify({"error": "You cannot deactivate your own account."}), 400
             try:
                 # Locks the tenants this user owns, refuses to orphan one, and
                 # clears the user's lead/conversation assignments everywhere.

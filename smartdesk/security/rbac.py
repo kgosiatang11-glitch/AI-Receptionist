@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 from flask import current_app, g, request
 
@@ -172,10 +173,16 @@ def _is_email_confirmed(claims) -> bool:
     if not db_uri.startswith("postgres"):
         return True
     try:
-        row = db.session.execute(
-            db.text("SELECT public.is_email_confirmed(:sub)"),
-            {"sub": claims.subject},
-        ).first()
+        # SAVEPOINT: on PostgreSQL a failed statement (function missing, no
+        # EXECUTE grant, ...) aborts the WHOLE transaction.  Without this the
+        # fail-closed ``return False`` below was followed by
+        # ``InFailedSqlTransaction`` on the very next query, i.e. a 500 instead
+        # of a clean refusal -- and it would poison any caller's transaction.
+        with db.session.begin_nested():
+            row = db.session.execute(
+                db.text("SELECT public.is_email_confirmed(:sub)"),
+                {"sub": claims.subject},
+            ).first()
     except Exception:
         # Fail closed: if we cannot prove the email is confirmed, treat it
         # as unconfirmed rather than trusting it. See the Phase 1 delivery
@@ -188,6 +195,15 @@ def _is_email_confirmed(claims) -> bool:
         )
         return False
     return bool(row and row[0] is not None)
+
+
+def email_confirmed_for_subject(subject: str) -> bool:
+    """:func:`_is_email_confirmed` for a user other than the caller.
+
+    Same source of truth and same fail-closed behaviour as the request path (it
+    delegates to it), so "verified" can never mean two different things.
+    """
+    return _is_email_confirmed(SimpleNamespace(subject=subject))
 
 
 def load_principal() -> Principal:

@@ -1,6 +1,7 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Sidebar } from "./components/ui.jsx";
 import { useSession } from "./lib/session.jsx";
+import { ACCEPT_INVITATION_PATH, AcceptInvitationPage } from "./pages/AcceptInvitation.jsx";
 import {
   LoginPage,
   NoBusinessPage,
@@ -52,6 +53,7 @@ function RequirePlatformAdmin({ children }) {
 
 export default function App() {
   const { session, loading, error, tenants, user, passwordRecovery } = useSession();
+  const location = useLocation();
 
   // The user followed a "reset password" email link. This takes priority
   // over everything else -- they must set a new password before landing
@@ -83,6 +85,14 @@ export default function App() {
   // back with an empty tenant list here regardless of any membership.
   if (user && user.email_verified === false) {
     return <VerifyEmailPage />;
+  }
+
+  // Accepting an invitation. Decided BEFORE the "no business" gate below: the
+  // person accepting their first invitation belongs to no business yet, so that
+  // gate would otherwise hide every route from them. Reaching this line already
+  // means: signed in, and the email is confirmed.
+  if (location.pathname.replace(/\/+$/, "") === ACCEPT_INVITATION_PATH) {
+    return <AcceptInvitationPage />;
   }
 
   // Authenticated and verified, but not a member of any tenant. Showing an

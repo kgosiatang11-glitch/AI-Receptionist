@@ -709,6 +709,12 @@ export function NoBusinessPage() {
         </Card>
 
         <p style={{ textAlign: "center", fontSize: 12.5, color: "var(--sd-ink-faint)", marginTop: 16 }}>
+          Invited to an existing business?{" "}
+          <Link to="/accept-invitation" style={{ color: "var(--sd-accent)", fontWeight: 600 }}>
+            Enter your invitation code
+          </Link>
+        </p>
+        <p style={{ textAlign: "center", fontSize: 12.5, color: "var(--sd-ink-faint)", marginTop: 8 }}>
           <LinkButton onClick={signOut}>Sign out</LinkButton>
         </p>
       </div>
