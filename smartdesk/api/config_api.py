@@ -2,8 +2,8 @@
 
 Secret values (Twilio auth token, OpenAI key, Supabase service key) are never
 returned by any route here.  Channel routes expose derived status only — a
-number, whether it is active, and whether credentials are present — so the
-frontend can render "Connected" without ever holding a credential.
+number, its registration state, and whether credentials are present — so the
+frontend can render channel status without ever holding a credential.
 """
 
 from __future__ import annotations
@@ -510,6 +510,43 @@ def update_receptionist():
 # ---------------------------------------------------------------------------
 
 
+#: Dashboard states for a channel.  They are derived only from data this
+#: application owns: the row's ``is_active`` flag and ``last_inbound_at``.
+#: ``receiving`` means a real inbound request has resolved to this channel.  It
+#: says nothing about outbound delivery or about the Twilio credentials, and no
+#: connectivity check is made against Twilio.
+CHANNEL_STATUS_INACTIVE = "inactive"
+CHANNEL_STATUS_REGISTERED = "registered"
+CHANNEL_STATUS_RECEIVING = "receiving"
+
+#: Inbound webhook path per channel kind (see ``smartdesk/channels/webhooks.py``).
+#: SMS has no webhook route in this application, so it has no URL to show.
+_WEBHOOK_PATHS = {"whatsapp": "/whatsapp", "voice": "/voice"}
+
+
+def _channel_status(channel: Channel) -> str:
+    if not channel.is_active:
+        return CHANNEL_STATUS_INACTIVE
+    if channel.last_inbound_at is None:
+        return CHANNEL_STATUS_REGISTERED
+    return CHANNEL_STATUS_RECEIVING
+
+
+def _webhook_url(kind: str) -> str | None:
+    """The public URL Twilio must call for this channel kind, or ``None``.
+
+    Built from ``TWILIO_WEBHOOK_BASE_URL`` exactly the way
+    ``security.twilio_guard`` builds the URL it validates signatures against.
+    When that setting is missing there is nothing trustworthy to show, so the
+    answer is ``None`` rather than a relative path or a guess.
+    """
+    path = _WEBHOOK_PATHS.get(kind)
+    base = (current_app.config.get("TWILIO_WEBHOOK_BASE_URL") or "").rstrip("/")
+    if path is None or not base.strip():
+        return None
+    return f"{base}{path}"
+
+
 def _channel_payload(channel: Channel, conversation_count: int) -> dict:
     return {
         "id": channel.id,
@@ -517,6 +554,7 @@ def _channel_payload(channel: Channel, conversation_count: int) -> dict:
         "address": channel.address,
         "display_name": channel.display_name,
         "is_active": channel.is_active,
+        "status": _channel_status(channel),
         "last_inbound_at": channel.last_inbound_at.isoformat()
         if channel.last_inbound_at
         else None,
@@ -526,11 +564,7 @@ def _channel_payload(channel: Channel, conversation_count: int) -> dict:
         "signature_validation": bool(
             current_app.config.get("TWILIO_VALIDATE_SIGNATURE")
         ),
-        "webhook_url": (
-            f"{current_app.config.get('TWILIO_WEBHOOK_BASE_URL', '')}"
-            f"{'/whatsapp' if channel.kind == 'whatsapp' else '/voice'}"
-        )
-        or None,
+        "webhook_url": _webhook_url(channel.kind),
     }
 
 

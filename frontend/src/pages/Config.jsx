@@ -368,6 +368,76 @@ function ConnectChannelForm({ kind, onConnected }) {
   );
 }
 
+/* Channel states, as computed by the backend (`channel.status`: inactive,
+ * registered or receiving). This page is shared by WhatsApp and voice, so the
+ * wording is chosen per channel kind: messages for WhatsApp, calls for voice.
+ *
+ * "Receiving" only means a real inbound request has reached this number. It
+ * does not show that replies can be sent or that the Twilio credentials work
+ * -- SmartDesk makes no check against Twilio at all -- so the wording below
+ * never claims more than that. */
+const CHANNEL_STATUS = {
+  whatsapp: {
+    inactive: {
+      label: "Inactive",
+      tone: "",
+      dot: "off",
+      hint: "This channel is switched off, so inbound messages to this number are not answered.",
+    },
+    registered: {
+      label: "Registered — Awaiting First Message",
+      tone: "warn",
+      dot: "warn",
+      hint: "This number is saved in SmartDesk, but no inbound message has reached it yet. Set the webhook URL below in Twilio, then message this number from another phone.",
+    },
+    receiving: {
+      label: "Receiving Messages",
+      tone: "ok",
+      dot: "ok",
+      hint: "A real inbound message has reached this number. This does not confirm that replies can be sent or that your Twilio credentials work.",
+    },
+  },
+  voice: {
+    inactive: {
+      label: "Inactive",
+      tone: "",
+      dot: "off",
+      hint: "This channel is switched off, so callers hear that the number is not in service.",
+    },
+    registered: {
+      label: "Registered — Awaiting First Call",
+      tone: "warn",
+      dot: "warn",
+      hint: "This number is saved in SmartDesk, but no inbound call has reached it yet. Set the webhook URL below in Twilio, then call this number from another phone.",
+    },
+    receiving: {
+      label: "Receiving Calls",
+      tone: "ok",
+      dot: "ok",
+      hint: "A real inbound call has reached this number. This does not confirm that your Twilio credentials work.",
+    },
+  },
+};
+
+/* Shown if the server does not report a status (for example an older backend
+ * during a rollout): say so rather than guess. */
+const CHANNEL_STATUS_UNKNOWN = {
+  label: "Status unavailable",
+  tone: "",
+  dot: "off",
+  hint: "",
+};
+
+const channelState = (channel) =>
+  CHANNEL_STATUS[channel.kind]?.[channel.status] ?? CHANNEL_STATUS_UNKNOWN;
+
+const WEBHOOK_HINT = {
+  whatsapp:
+    "In the Twilio console, set this as the incoming-message webhook URL for this WhatsApp number, with method HTTP POST.",
+  voice:
+    "In the Twilio console, set this as the “A call comes in” webhook for this number, with method HTTP POST.",
+};
+
 function ChannelPage({ kind, title, subtitle }) {
   const { data, loading, error, refresh } = useApi(`/channels/${kind}`, [kind]);
   const overview = useApi("/overview");
@@ -391,14 +461,19 @@ function ChannelPage({ kind, title, subtitle }) {
               className=""
               title={title}
               action={
-                <Badge tone={channel.is_active ? "ok" : ""}>
-                  <Dot state={channel.is_active ? "ok" : "off"} />
-                  {channel.is_active ? "Connected" : "Inactive"}
+                <Badge tone={channelState(channel).tone}>
+                  <Dot state={channelState(channel).dot} />
+                  {channelState(channel).label}
                 </Badge>
               }
             >
+              {channelState(channel).hint && (
+                <p className="sd-hint" style={{ marginTop: 0, marginBottom: 8 }}>
+                  {channelState(channel).hint}
+                </p>
+              )}
               <div className="sd-status-row"><span>Number</span><span>{channel.address}</span></div>
-              <div className="sd-status-row"><span>Status</span><span>{channel.is_active ? "Active" : "Inactive"}</span></div>
+              <div className="sd-status-row"><span>Status</span><span>{channelState(channel).label}</span></div>
               <div className="sd-status-row">
                 <span>{kind === "voice" ? "Calls this month" : "Conversations"}</span>
                 <span>{channel.conversations}</span>
@@ -411,6 +486,36 @@ function ChannelPage({ kind, title, subtitle }) {
               )}
               <div className="sd-status-row">
                 <span>Last inbound</span><span>{formatDateTime(channel.last_inbound_at)}</span>
+              </div>
+              <div style={{ padding: "9px 0", borderBottom: "1px solid var(--sd-border)" }}>
+                <div style={{ fontSize: 13, color: "var(--sd-ink-soft)", marginBottom: 6 }}>
+                  Webhook URL
+                </div>
+                {channel.webhook_url ? (
+                  <>
+                    <code
+                      style={{
+                        display: "block",
+                        fontSize: 12.5,
+                        wordBreak: "break-all",
+                        userSelect: "all",
+                      }}
+                    >
+                      {channel.webhook_url}
+                    </code>
+                    <p className="sd-hint">
+                      {WEBHOOK_HINT[kind]} SmartDesk cannot see your Twilio
+                      settings, so it cannot confirm this has been done.
+                    </p>
+                  </>
+                ) : (
+                  <PendingNotice>
+                    The exact webhook URL is not available because this server
+                    has no public base URL configured (TWILIO_WEBHOOK_BASE_URL).
+                    Ask your SmartDesk administrator to set it. SmartDesk will
+                    not guess the address.
+                  </PendingNotice>
+                )}
               </div>
               <div className="sd-status-row">
                 <span>Provider credentials</span>
