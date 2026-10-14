@@ -549,11 +549,46 @@ function ChannelPage({ kind, title, subtitle }) {
   );
 }
 
-export const WhatsAppPage = () => (
+export function WhatsAppPage() {
+  const { call, can } = useSession();
+  const { data, loading, error, refresh } = useApi("/whatsapp-onboarding");
+  const [phone, setPhone] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [localError, setLocalError] = useState("");
+  const onboarding = data?.onboarding;
 
-  <ChannelPage kind="whatsapp" title="WhatsApp"
-    subtitle="The WhatsApp number customers of this business message." />
-);
+  async function submit(event) {
+    event.preventDefault(); setLocalError("");
+    const normalized = normalizeAddress(phone);
+    if (!E164_PATTERN.test(normalized)) { setLocalError("Enter a valid number in international format."); return; }
+    setSaving(true);
+    try {
+      await call("/whatsapp-onboarding", { method: "POST", body: { phone_number: normalized, display_name: displayName } });
+      setPhone(""); setDisplayName(""); refresh();
+    } catch (err) { setLocalError(err.message); } finally { setSaving(false); }
+  }
+
+  if (loading) return <Loading />;
+  return <>
+    <PageHead title="WhatsApp setup" subtitle="Submit your business number for secure manual provisioning by SmartDesk." />
+    <ErrorNotice message={error || localError} />
+    {onboarding ? <Card title="Setup status">
+      <div className="sd-status-row"><span>Requested number</span><span>{onboarding.requested_number}</span></div>
+      <div className="sd-status-row"><span>Status</span><Badge tone={onboarding.status === "active" ? "ok" : "warn"}>{onboarding.status.replaceAll("_", " ")}</Badge></div>
+      <div className="sd-status-row"><span>Receptionist</span><span>{onboarding.receptionist_active ? "Active" : "Not active"}</span></div>
+      <p className="sd-hint">{onboarding.status === "active" ? "Your WhatsApp receptionist is active." : "SmartDesk is reviewing the request. Provider and verification details are handled by an administrator."}</p>
+      {onboarding.outstanding_requirements?.length > 0 && <><strong>Outstanding requirements</strong><ul>{onboarding.outstanding_requirements.map((item) => <li key={item}>{item}</li>)}</ul></>}
+    </Card> : null}
+    {can("owner") && (!onboarding || ["failed", "cancelled", "suspended"].includes(onboarding.status)) && <Card title="Request WhatsApp setup">
+      <form onSubmit={submit}>
+        <div className="sd-field"><label className="sd-label">Business WhatsApp number</label><input className="sd-input" value={phone} placeholder="+26771234567" onChange={(e) => setPhone(e.target.value)} /></div>
+        <div className="sd-field"><label className="sd-label">Business display name (optional)</label><input className="sd-input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} /></div>
+        <button className="sd-btn" disabled={saving}>{saving ? "Submitting…" : "Submit for review"}</button>
+      </form>
+    </Card>}
+  </>;
+}
 
 export const VoicePage = () => (
   <ChannelPage kind="voice" title="Voice"

@@ -30,6 +30,7 @@ import { AdminTenantDetailPage, AdminTenantsPage } from "./pages/AdminTenants.js
 import {
   AdminAnalyticsPage,
   AdminChannelsPage,
+  AdminWhatsAppOnboardingPage,
   AdminOverviewPage,
   AdminReceptionistsPage,
   AdminSystemSettingsPage,
@@ -127,6 +128,7 @@ export default function App() {
             <Route path="/admin/users" element={<RequirePlatformAdmin><AdminUsersPage /></RequirePlatformAdmin>} />
             <Route path="/admin/receptionists" element={<RequirePlatformAdmin><AdminReceptionistsPage /></RequirePlatformAdmin>} />
             <Route path="/admin/channels" element={<RequirePlatformAdmin><AdminChannelsPage /></RequirePlatformAdmin>} />
+            <Route path="/admin/whatsapp-onboarding" element={<RequirePlatformAdmin><AdminWhatsAppOnboardingPage /></RequirePlatformAdmin>} />
             <Route path="/admin/analytics" element={<RequirePlatformAdmin><AdminAnalyticsPage /></RequirePlatformAdmin>} />
             <Route path="/admin/settings" element={<RequirePlatformAdmin><AdminSystemSettingsPage /></RequirePlatformAdmin>} />
             <Route path="/conversations" element={<ConversationsPage />} />

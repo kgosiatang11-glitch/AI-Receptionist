@@ -1,4 +1,4 @@
-"""C6 -- user assignment & membership hardening on real PostgreSQL.
+﻿"""C6 -- user assignment & membership hardening on real PostgreSQL.
 
 Runs the shared adversarial checks against the migrated schema and adds the
 things SQLite cannot show: the composite FK, ``ON DELETE SET NULL
@@ -130,7 +130,7 @@ class MigrationPreflightTests(PostgresWebhookTestCase):
 
     def tearDown(self):
         try:
-            if self._scalar("SELECT version_num FROM alembic_version") != "0008_assignment_invitations":
+            if self._scalar("SELECT version_num FROM alembic_version") != "0009_whatsapp_onboarding":
                 self._migrate("upgrade", "head")
         finally:
             super().tearDown()
@@ -190,7 +190,7 @@ class MigrationPreflightTests(PostgresWebhookTestCase):
                 db.session.commit()
                 self._migrate("upgrade", "head")
                 self.assertEqual(self._scalar("SELECT version_num FROM alembic_version"),
-                                 "0008_assignment_invitations")
+                                 "0009_whatsapp_onboarding")
                 self.assertTrue(self._scalar(
                     "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_leads_assignee_member')"))
 
@@ -206,7 +206,7 @@ class MigrationPreflightTests(PostgresWebhookTestCase):
             " OR to_regclass('public.conversations') IS NOT NULL"))
         self._migrate("upgrade", "head")
         self.assertEqual(self._scalar("SELECT version_num FROM alembic_version"),
-                         "0008_assignment_invitations")
+                         "0009_whatsapp_onboarding")
 
 
 class LastOwnerRaceTests(_PgWorld, C6Fixtures, PostgresWebhookTestCase):

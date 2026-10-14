@@ -274,6 +274,15 @@ class Invitation(TimestampMixin, TenantScoped, db.Model):
 
 CHANNEL_KINDS = ("whatsapp", "voice", "sms")
 
+# Manual WhatsApp onboarding is deliberately separate from Channel.  A Channel
+# is a trusted, live routing record; an onboarding request is untrusted until a
+# platform administrator has completed the checks below.
+WHATSAPP_ONBOARDING_STATUSES = (
+    "requested", "under_review", "provisioning", "awaiting_verification",
+    "configuration_pending", "ready_for_testing", "active", "failed",
+    "suspended", "cancelled",
+)
+
 
 class Channel(TimestampMixin, TenantScoped, db.Model):
     """Maps an inbound Twilio destination number to its owning tenant.
@@ -288,6 +297,7 @@ class Channel(TimestampMixin, TenantScoped, db.Model):
     tenant_id = db.Column(
         UUIDType, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
+
     kind = db.Column(String(16), nullable=False)
     # Normalised E.164 without the "whatsapp:" prefix, e.g. "+26771234567".
     address = db.Column(String(32), nullable=False)
@@ -314,6 +324,41 @@ class Channel(TimestampMixin, TenantScoped, db.Model):
       ),
         Index("ix_channels_tenant", "tenant_id"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Manual WhatsApp provisioning (not a live channel until activated)
+# ---------------------------------------------------------------------------
+
+class WhatsAppOnboarding(TimestampMixin, TenantScoped, db.Model):
+    __tablename__ = "whatsapp_onboardings"
+    id = db.Column(UUIDType, primary_key=True, default=_uuid)
+    tenant_id = db.Column(UUIDType, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    requested_number = db.Column(String(32), nullable=False)
+    display_name = db.Column(String(120))
+    status = db.Column(String(32), nullable=False, default="requested")
+    twilio_sender_sid = db.Column(String(64))
+    twilio_configuration_recorded = db.Column(Boolean, nullable=False, default=False)
+    phone_verification_status = db.Column(String(24), nullable=False, default="not_applicable")
+    meta_verification_status = db.Column(String(24), nullable=False, default="not_applicable")
+    registration_status = db.Column(String(24), nullable=False, default="unverified")
+    outstanding_requirements = db.Column(JSONType, nullable=False, default=list)
+    last_provider_check_at = db.Column(DateTime(timezone=True))
+    last_provider_check_passed = db.Column(Boolean)
+    provider_check_source = db.Column(String(32))
+    provisioning_error = db.Column(Text)
+    receptionist_active = db.Column(Boolean, nullable=False, default=False)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", name="uq_whatsapp_onboarding_tenant"),
+        CheckConstraint("status in ('requested','under_review','provisioning','awaiting_verification','configuration_pending','ready_for_testing','active','failed','suspended','cancelled')", name="ck_whatsapp_onboarding_status"),
+        Index("ix_whatsapp_onboarding_status", "status"),
+    )
+
+    def to_dict(self, *, include_provider_details: bool = False) -> dict:
+        data = {"id": self.id, "requested_number": self.requested_number, "display_name": self.display_name, "status": self.status, "phone_verification_status": self.phone_verification_status, "meta_verification_status": self.meta_verification_status, "registration_status": self.registration_status, "outstanding_requirements": self.outstanding_requirements, "receptionist_active": self.receptionist_active, "created_at": _iso(self.created_at), "updated_at": _iso(self.updated_at)}
+        if include_provider_details:
+            data.update({"twilio_sender_sid": self.twilio_sender_sid, "twilio_configuration_recorded": self.twilio_configuration_recorded, "last_provider_check_at": _iso(self.last_provider_check_at), "last_provider_check_passed": self.last_provider_check_passed, "provider_check_source": self.provider_check_source, "provisioning_error": self.provisioning_error})
+        return data
 
 
 # ---------------------------------------------------------------------------

@@ -24,7 +24,8 @@ from sqlalchemy.exc import IntegrityError  # noqa: E402
 from twilio.request_validator import RequestValidator  # noqa: E402
 
 from smartdesk.extensions import db  # noqa: E402
-from smartdesk.models import AuditLog, Channel, Membership, User  # noqa: E402
+from smartdesk.models import AuditLog, Channel, Membership, User, WhatsAppOnboarding  # noqa: E402
+from smartdesk.services import whatsapp_onboarding  # noqa: E402
 from smartdesk.tenancy import resolve_channel  # noqa: E402
 from tests.test_multitenant import MultiTenantTestCase  # noqa: E402
 
@@ -53,6 +54,30 @@ class ChannelTestCase(MultiTenantTestCase):
             "/api/v1/channels", headers=self.auth(user), json=payload
         )
 
+    def request_whatsapp(self, user, **payload):
+        return self.client.post(
+            "/api/v1/whatsapp-onboarding", headers=self.auth(user), json=payload
+        )
+
+    def activate_whatsapp_for_test(self, address: str) -> Channel:
+        """Create a trusted channel through the service's real activation gate.
+
+        This preserves the channel-uniqueness coverage without restoring the
+        unsafe owner-facing ``POST /channels`` WhatsApp path.
+        """
+        onboarding = WhatsAppOnboarding(
+            tenant_id=self.padel.id, requested_number=address,
+            status="ready_for_testing", twilio_configuration_recorded=True,
+            registration_status="registered", phone_verification_status="confirmed",
+            meta_verification_status="confirmed", last_provider_check_passed=True,
+            provider_check_source="administrator_confirmation",
+        )
+        db.session.add(onboarding)
+        db.session.flush()
+        channel = whatsapp_onboarding.activate(onboarding)
+        db.session.commit()
+        return channel
+
     def list_channels(self, user, kind="whatsapp"):
         response = self.client.get(
             f"/api/v1/channels/{kind}", headers=self.auth(user)
@@ -75,68 +100,58 @@ class ChannelTestCase(MultiTenantTestCase):
 
 
 class ChannelRegistrationTests(ChannelTestCase):
-    def test_owner_registers_a_whatsapp_number_for_their_own_tenant(self):
+    def test_owner_cannot_create_live_whatsapp_channel_and_can_request_onboarding(self):
         response = self.post_channel(
             self.padel_user,
             kind="whatsapp",
             address="+26771234567",
             display_name="Main line",
         )
+        self.assertEqual(response.status_code, 403, response.get_json())
+        self.assertIsNone(Channel.query.filter_by(kind="whatsapp", address="+26771234567").one_or_none())
+        response = self.request_whatsapp(
+            self.padel_user, phone_number="+26771234567", display_name="Main line"
+        )
         self.assertEqual(response.status_code, 201, response.get_json())
-        body = response.get_json()
-        self.assertEqual(body["kind"], "whatsapp")
-        self.assertEqual(body["address"], "+26771234567")
-        self.assertEqual(body["display_name"], "Main line")
-        self.assertTrue(body["is_active"])
-        self.assertEqual(body["status"], "registered")
-        self.assertIsNone(body["last_inbound_at"])
-        self.assertEqual(body["conversations"], 0)
-
-        row = Channel.query.filter_by(kind="whatsapp", address="+26771234567").one()
-        self.assertEqual(row.id, body["id"])
-        self.assertEqual(row.tenant_id, self.padel.id)
-        self.assertTrue(row.is_active)
-        self.assertEqual(row.display_name, "Main line")
-        self.assertIsNone(row.last_inbound_at)
+        onboarding = WhatsAppOnboarding.query.filter_by(tenant_id=self.padel.id).one()
+        self.assertEqual(onboarding.requested_number, "+26771234567")
+        self.assertEqual(onboarding.display_name, "Main line")
 
     def test_new_channel_is_visible_to_its_tenant_and_not_to_another(self):
-        self.post_channel(self.padel_user, kind="whatsapp", address="+26771234567")
+        self.request_whatsapp(self.padel_user, phone_number="+26771234567")
 
         padel = {c["address"] for c in self.list_channels(self.padel_user)}
         salon = {c["address"] for c in self.list_channels(self.salon_user)}
-        self.assertIn("+26771234567", padel)
+        self.assertNotIn("+26771234567", padel, "requested numbers are not live channels")
         self.assertEqual(salon, {SALON_WHATSAPP})
 
     def test_tenant_always_comes_from_the_caller_never_from_the_payload(self):
-        response = self.post_channel(
+        response = self.request_whatsapp(
             self.padel_user,
-            kind="whatsapp",
-            address="+26771234567",
+            phone_number="+26771234567",
             tenant_id=self.salon.id,
         )
         self.assertEqual(response.status_code, 201, response.get_json())
-        row = Channel.query.filter_by(address="+26771234567").one()
+        row = WhatsAppOnboarding.query.filter_by(requested_number="+26771234567").one()
         self.assertEqual(row.tenant_id, self.padel.id)
 
     def test_registration_is_audit_logged(self):
-        before = AuditLog.query.filter_by(action="channel.create").count()
-        response = self.post_channel(
-            self.padel_user, kind="whatsapp", address="+26771234567"
+        before = AuditLog.query.filter_by(action="whatsapp_onboarding.request").count()
+        response = self.request_whatsapp(
+            self.padel_user, phone_number="+26771234567"
         )
         self.assertEqual(response.status_code, 201, response.get_json())
 
-        entries = AuditLog.query.filter_by(action="channel.create").all()
+        entries = AuditLog.query.filter_by(action="whatsapp_onboarding.request").all()
         self.assertEqual(len(entries), before + 1)
         entry = entries[-1]
         self.assertEqual(entry.tenant_id, self.padel.id)
         self.assertEqual(entry.actor_email, self.padel_user.email)
-        self.assertEqual(entry.object_type, "channel")
-        self.assertEqual(entry.meta, {"kind": "whatsapp", "address": "+26771234567"})
+        self.assertEqual(entry.object_type, "whatsapp_onboarding")
+        self.assertEqual(entry.meta, {"requested_number": "+26771234567"})
 
     def test_existing_payload_fields_are_preserved_alongside_status(self):
-        response = self.post_channel(
-            self.padel_user, kind="whatsapp", address="+26771234567"
-        )
+        response = self.post_channel(self.padel_user, kind="voice", address="+26771234567")
         self.assertTrue(LEGACY_PAYLOAD_KEYS <= set(response.get_json()))
         for item in self.list_channels(self.padel_user):
             self.assertTrue(LEGACY_PAYLOAD_KEYS <= set(item))
@@ -144,7 +159,7 @@ class ChannelRegistrationTests(ChannelTestCase):
 
 
 class ChannelNormalisationTests(ChannelTestCase):
-    def test_numbers_are_stored_as_bare_e164(self):
+    def test_whatsapp_requests_are_normalized_without_creating_live_channels(self):
         # Each case uses its own number so none collides with another.
         cases = [
             ("whatsapp:+267 7123 4501", "+26771234501"),
@@ -155,16 +170,16 @@ class ChannelNormalisationTests(ChannelTestCase):
         ]
         for raw, expected in cases:
             with self.subTest(raw=raw):
-                response = self.post_channel(
-                    self.padel_user, kind="whatsapp", address=raw
-                )
+                response = self.request_whatsapp(self.padel_user, phone_number=raw)
                 self.assertEqual(response.status_code, 201, response.get_json())
-                self.assertEqual(response.get_json()["address"], expected)
-                row = Channel.query.filter_by(kind="whatsapp", address=expected).one()
+                self.assertEqual(response.get_json()["onboarding"]["requested_number"], expected)
+                row = WhatsAppOnboarding.query.filter_by(requested_number=expected).one()
                 self.assertEqual(row.tenant_id, self.padel.id)
                 self.assertIsNone(
                     Channel.query.filter_by(kind="whatsapp", address=raw).one_or_none()
                 )
+                db.session.delete(row)
+                db.session.commit()
 
     def test_inputs_that_normalise_to_nothing_are_rejected(self):
         cases = [
@@ -190,9 +205,9 @@ class ChannelNormalisationTests(ChannelTestCase):
 
 
 class ChannelDuplicateTests(ChannelTestCase):
-    def assert_rejected_and_unchanged(self, response):
-        self.assertEqual(response.status_code, 409, response.get_json())
-        self.assertIn("already registered", response.get_json()["error"])
+    def assert_direct_whatsapp_rejected_and_unchanged(self, response):
+        self.assertEqual(response.status_code, 403, response.get_json())
+        self.assertIn("setup request", response.get_json()["error"])
         # Still exactly one row, still owned by the original tenant.
         row = self.padel_whatsapp_row()
         self.assertEqual(row.tenant_id, self.padel.id)
@@ -204,19 +219,19 @@ class ChannelDuplicateTests(ChannelTestCase):
         response = self.post_channel(
             self.salon_user, kind="whatsapp", address=PADEL_WHATSAPP
         )
-        self.assert_rejected_and_unchanged(response)
+        self.assert_direct_whatsapp_rejected_and_unchanged(response)
 
     def test_duplicate_is_detected_after_normalisation(self):
         response = self.post_channel(
             self.salon_user, kind="whatsapp", address="whatsapp:+267 7000 0001"
         )
-        self.assert_rejected_and_unchanged(response)
+        self.assert_direct_whatsapp_rejected_and_unchanged(response)
 
     def test_a_tenant_cannot_register_its_own_number_twice(self):
         response = self.post_channel(
             self.padel_user, kind="whatsapp", address=PADEL_WHATSAPP
         )
-        self.assert_rejected_and_unchanged(response)
+        self.assert_direct_whatsapp_rejected_and_unchanged(response)
 
     def test_rejected_duplicate_is_not_audit_logged(self):
         before = AuditLog.query.filter_by(action="channel.create").count()
@@ -239,19 +254,21 @@ class ChannelKindUniquenessTests(ChannelTestCase):
     """Uniqueness is per ``(kind, address)``: one number may serve several
     channel kinds, but never the same kind for two tenants."""
 
+    def assert_direct_whatsapp_rejected_and_unchanged(self, response):
+        self.assertEqual(response.status_code, 403, response.get_json())
+        self.assertIn("setup request", response.get_json()["error"])
+
     def test_same_address_can_be_registered_under_a_different_kind(self):
-        # PADEL_VOICE exists as a voice channel; register it for WhatsApp too.
-        response = self.post_channel(
-            self.padel_user, kind="whatsapp", address=PADEL_VOICE
-        )
-        self.assertEqual(response.status_code, 201, response.get_json())
+        # PADEL_VOICE exists as a voice channel; platform activation can add
+        # the same address as WhatsApp without reopening the owner bypass.
+        self.activate_whatsapp_for_test(PADEL_VOICE)
 
         rows = Channel.query.filter_by(address=PADEL_VOICE).all()
         self.assertEqual({r.kind for r in rows}, {"voice", "whatsapp"})
         self.assertEqual({r.tenant_id for r in rows}, {self.padel.id})
 
     def test_same_address_under_another_kind_resolves_per_kind(self):
-        self.post_channel(self.padel_user, kind="whatsapp", address=PADEL_VOICE)
+        self.activate_whatsapp_for_test(PADEL_VOICE)
         self.assertEqual(resolve_channel("whatsapp", PADEL_VOICE).kind, "whatsapp")
         self.assertEqual(resolve_channel("voice", PADEL_VOICE).kind, "voice")
 
@@ -270,10 +287,8 @@ class ChannelKindUniquenessTests(ChannelTestCase):
             self.salon_user, kind="voice", address=PADEL_WHATSAPP
         )
         self.assertEqual(response.status_code, 409, response.get_json())
-        response = self.post_channel(
-            self.salon_user, kind="whatsapp", address=PADEL_WHATSAPP
-        )
-        self.assertEqual(response.status_code, 409, response.get_json())
+        response = self.post_channel(self.salon_user, kind="whatsapp", address=PADEL_WHATSAPP)
+        self.assert_direct_whatsapp_rejected_and_unchanged(response)
 
 
 class ChannelOwnershipTests(ChannelTestCase):
@@ -369,12 +384,12 @@ class ChannelWebhookUrlTests(ChannelTestCase):
                 self.assertIsNone(self.url_for("whatsapp"))
                 self.assertIsNone(self.url_for("voice"))
 
-    def test_registration_response_carries_the_same_url(self):
+    def test_voice_registration_response_carries_the_same_url(self):
         self.app.config["TWILIO_WEBHOOK_BASE_URL"] = self.BASE
         response = self.post_channel(
-            self.padel_user, kind="whatsapp", address="+26771234567"
+            self.padel_user, kind="voice", address="+26771234567"
         )
-        self.assertEqual(response.get_json()["webhook_url"], f"{self.BASE}/whatsapp")
+        self.assertEqual(response.get_json()["webhook_url"], f"{self.BASE}/voice")
 
     def test_sms_has_no_webhook_route_so_no_url_is_shown(self):
         self.app.config["TWILIO_WEBHOOK_BASE_URL"] = self.BASE

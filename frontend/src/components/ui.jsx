@@ -162,6 +162,7 @@ const NAV_GROUPS = [
       { to: "/admin/users", label: "Users", icon: "◐" },
       { to: "/admin/receptionists", label: "AI Receptionists", icon: "◎" },
       { to: "/admin/channels", label: "Channels", icon: "✆" },
+      { to: "/admin/whatsapp-onboarding", label: "WhatsApp onboarding", icon: "✓" },
       { to: "/admin/analytics", label: "Analytics", icon: "▦" },
       { to: "/admin/settings", label: "System Settings", icon: "⚒" },
     ],

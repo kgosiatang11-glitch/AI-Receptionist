@@ -10,7 +10,7 @@ import {
   PageHead,
   SwitchRow,
 } from "../components/ui.jsx";
-import { useApi } from "../lib/session.jsx";
+import { useApi, useSession } from "../lib/session.jsx";
 
 function StatCard({ label, value, description }) {
   return (
@@ -31,9 +31,10 @@ function StatCard({ label, value, description }) {
 }
 
 function useAdminData(path) {
-  const api = useApi();
+  const { call } = useSession();
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
+  const [revision, setRevision] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,7 +43,7 @@ function useAdminData(path) {
       setError("");
 
       try {
-        const result = await api(path);
+        const result = await call(path);
         if (!cancelled) setData(result);
       } catch (err) {
         if (!cancelled) {
@@ -56,9 +57,9 @@ function useAdminData(path) {
     return () => {
       cancelled = true;
     };
-  }, [api, path]);
+  }, [call, path, revision]);
 
-  return { data, error };
+  return { data, error, refresh: () => setRevision((value) => value + 1) };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -143,6 +144,10 @@ export function AdminOverviewPage() {
 
               <Link className="sd-button" to="/admin/channels">
                 Channels
+              </Link>
+
+              <Link className="sd-button" to="/admin/whatsapp-onboarding">
+                WhatsApp onboarding
               </Link>
             </div>
           </div>
@@ -513,4 +518,87 @@ export function AdminSystemSettingsPage() {
       </div>
     </>
   );
+}
+
+function WhatsAppOnboardingRow({ row, busy, onAction }) {
+  const [form, setForm] = useState(() => ({
+    twilio_sender_sid: row.twilio_sender_sid || "",
+    twilio_configuration_recorded: Boolean(row.twilio_configuration_recorded),
+    registration_status: row.registration_status,
+    phone_verification_status: row.phone_verification_status,
+    meta_verification_status: row.meta_verification_status,
+    outstanding_requirements: (row.outstanding_requirements || []).join("\n"),
+    provisioning_error: row.provisioning_error || "",
+    check_source: row.provider_check_source || "administrator_confirmation",
+  }));
+  const set = (field, value) => setForm((current) => ({ ...current, [field]: value }));
+  const save = () => onAction(row, "update", {
+    twilio_sender_sid: form.twilio_sender_sid || null,
+    twilio_configuration_recorded: form.twilio_configuration_recorded,
+    registration_status: form.registration_status,
+    phone_verification_status: form.phone_verification_status,
+    meta_verification_status: form.meta_verification_status,
+    outstanding_requirements: form.outstanding_requirements.split("\n").map((item) => item.trim()).filter(Boolean),
+    provisioning_error: form.provisioning_error,
+  });
+  const disabled = busy === row.id;
+  return <tr>
+    <td><strong>{row.business_name}</strong><br /><span style={{ opacity: .7 }}>{row.owner?.email || "No linked owner"}</span></td>
+    <td>{row.requested_number}<br /><Badge tone={row.status === "active" ? "ok" : row.status === "failed" ? "alert" : "warn"}>{row.status.replaceAll("_", " ")}</Badge></td>
+    <td style={{ minWidth: 250 }}>
+      <label className="sd-label">Twilio sender SID</label><input className="sd-input" value={form.twilio_sender_sid} placeholder="PN…" disabled={disabled} onChange={(e) => set("twilio_sender_sid", e.target.value)} />
+      <label className="sd-check" style={{ marginTop: 8 }}><input type="checkbox" checked={form.twilio_configuration_recorded} disabled={disabled} onChange={(e) => set("twilio_configuration_recorded", e.target.checked)} /> Configuration recorded</label>
+      <label className="sd-label">Sender registration</label><select className="sd-select" value={form.registration_status} disabled={disabled} onChange={(e) => set("registration_status", e.target.value)}>{["unverified", "pending", "registered", "failed"].map((value) => <option key={value}>{value}</option>)}</select>
+    </td>
+    <td style={{ minWidth: 220 }}>
+      <label className="sd-label">Phone verification</label><select className="sd-select" value={form.phone_verification_status} disabled={disabled} onChange={(e) => set("phone_verification_status", e.target.value)}>{["not_applicable", "pending", "confirmed", "failed", "unverified"].map((value) => <option key={value}>{value}</option>)}</select>
+      <label className="sd-label">Meta verification</label><select className="sd-select" value={form.meta_verification_status} disabled={disabled} onChange={(e) => set("meta_verification_status", e.target.value)}>{["not_applicable", "pending", "confirmed", "failed", "unverified"].map((value) => <option key={value}>{value}</option>)}</select>
+      <label className="sd-label">Outstanding requirements (one per line)</label><textarea className="sd-input" rows="3" value={form.outstanding_requirements} disabled={disabled} onChange={(e) => set("outstanding_requirements", e.target.value)} />
+      <label className="sd-label">Provisioning note / error</label><input className="sd-input" value={form.provisioning_error} disabled={disabled} onChange={(e) => set("provisioning_error", e.target.value)} />
+      <button className="sd-button" disabled={disabled} onClick={save}>Save record</button>
+    </td>
+    <td style={{ minWidth: 220 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <button className="sd-button" disabled={disabled} onClick={() => onAction(row, "review")}>Review</button>
+        <button className="sd-button" disabled={disabled} onClick={() => onAction(row, "provision")}>Provision</button>
+        <button className="sd-button" disabled={disabled} onClick={() => onAction(row, "ready_for_testing")}>Ready for testing</button>
+        <button className="sd-button" disabled={disabled} onClick={() => onAction(row, "record_check", { passed: true, source: form.check_source })}>Record passed check</button>
+        <button className="sd-button" disabled={disabled} onClick={() => onAction(row, "record_check", { passed: false, source: form.check_source, error: form.provisioning_error })}>Record failed check</button>
+        <button className="sd-button" disabled={disabled} onClick={() => onAction(row, "activate")}>Activate</button>
+        <button className="sd-button" disabled={disabled} onClick={() => onAction(row, "suspend")}>Suspend</button>
+      </div>
+      <label className="sd-label" style={{ marginTop: 10 }}>Check source</label><select className="sd-select" value={form.check_source} disabled={disabled} onChange={(e) => set("check_source", e.target.value)}><option value="administrator_confirmation">Administrator attestation</option><option value="provider_console">Provider console</option><option value="test_webhook">Test webhook</option></select>
+      <p className="sd-hint">Provider checks are administrator attestations. SmartDesk does not contact Twilio or Meta automatically.</p>
+      {row.last_provider_check_at && <small>Last check: {row.last_provider_check_passed ? "passed" : "failed"} ({row.provider_check_source})</small>}
+    </td>
+  </tr>;
+}
+
+export function AdminWhatsAppOnboardingPage() {
+  const { data, error, refresh } = useAdminData("/admin/whatsapp-onboardings");
+  const { call } = useSession();
+  const [busy, setBusy] = useState(null);
+  const [localError, setLocalError] = useState("");
+  async function act(row, action, fields = {}) {
+    setBusy(row.id);
+    setLocalError("");
+
+    try {
+      await call(`/admin/whatsapp-onboardings/${row.id}`, {
+        method: "PATCH",
+        body: { action, ...fields },
+      });
+
+      refresh();
+    } catch (err) {
+      setLocalError(err.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+  const rows = data?.items || [];
+  return <><PageHead title="WhatsApp onboarding" subtitle="Record manual provisioning evidence, verification status, and administrator-attested provider checks." />
+    <ErrorNotice message={error || localError} />
+    {!data && !error ? <Loading /> : rows.length === 0 ? <EmptyState title="No WhatsApp onboarding requests" /> : <Card><div className="sd-table-wrap"><table className="sd-table"><thead><tr><th>Business</th><th>Number / status</th><th>Twilio configuration</th><th>Verification & requirements</th><th>Actions</th></tr></thead><tbody>{rows.map((row) => <WhatsAppOnboardingRow key={row.id} row={row} busy={busy} onAction={act} />)}</tbody></table></div></Card>}
+  </>;
 }

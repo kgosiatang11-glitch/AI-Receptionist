@@ -17,6 +17,8 @@ NOT used anywhere in this codebase and is not introduced here.
 
 from __future__ import annotations
 
+import re
+
 from flask import Blueprint, g, jsonify, request
 
 from smartdesk.extensions import db
@@ -29,6 +31,7 @@ from smartdesk.models import (
     ReceptionistProfile,
     Tenant,
     User,
+    WhatsAppOnboarding,
 )
 from smartdesk.security.rbac import record_audit, require_platform_admin
 from smartdesk.services import membership_lifecycle, platform_admins
@@ -40,6 +43,7 @@ from smartdesk.services.tenant_provisioning import (
     VALID_STATUSES,
     provision_new_tenant,
 )
+from smartdesk.services import whatsapp_onboarding
 
 admin_api = Blueprint("admin_api", __name__)
 
@@ -53,6 +57,29 @@ admin_api = Blueprint("admin_api", __name__)
 #: Changing either bound is a business decision, not a schema change.
 MIN_MONTHLY_CONVERSATION_LIMIT = 1
 MAX_MONTHLY_CONVERSATION_LIMIT = 100_000
+_TWILIO_SENDER_SID_RE = re.compile(r"^PN[0-9a-fA-F]{32}$")
+_MAX_ONBOARDING_NOTE_LENGTH = 2_000
+
+
+def _onboarding_json() -> dict | None:
+    """Accept only a JSON object for an onboarding administration request.
+
+    ``request.get_json(... ) or {}`` treats lists as valid truthy values and
+    used to let their missing ``.get`` method escape as a 500.  Keeping this
+    at the API boundary also makes every mutation path use the same contract.
+    """
+    payload = request.get_json(silent=True)
+    return payload if isinstance(payload, dict) else None
+
+
+def _required_string(value, field: str, *, max_length: int = _MAX_ONBOARDING_NOTE_LENGTH,
+                     allow_empty: bool = False) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if (not value and not allow_empty) or len(value) > max_length:
+        return None
+    return value
 
 
 def _parse_monthly_conversation_limit(value) -> int:
@@ -107,6 +134,17 @@ def _tenant_summary(tenant: Tenant) -> dict:
     }
 
 
+def _onboarding_admin_payload(row: WhatsAppOnboarding) -> dict:
+    tenant = db.session.get(Tenant, row.tenant_id)
+    owner = _owner_linked(row.tenant_id)
+    return {
+        **row.to_dict(include_provider_details=True),
+        "tenant_id": row.tenant_id,
+        "business_name": tenant.name if tenant else None,
+        "owner": owner or {"email": tenant.owner_email if tenant else None},
+    }
+
+
 # ---------------------------------------------------------------------------
 # Tenant listing / creation
 # ---------------------------------------------------------------------------
@@ -126,6 +164,141 @@ def get_tenant_detail(tenant_id: str):
     if tenant is None:
         return jsonify({"error": "Tenant not found"}), 404
     return jsonify(_tenant_summary(tenant))
+
+
+# ---------------------------------------------------------------------------
+# Manual WhatsApp provisioning.  These endpoints record administrator actions;
+# they never claim to query Twilio/Meta because this release has no such API.
+# ---------------------------------------------------------------------------
+
+
+@admin_api.get("/admin/whatsapp-onboardings")
+@require_platform_admin
+def list_whatsapp_onboardings():
+    rows = WhatsAppOnboarding.query.order_by(WhatsAppOnboarding.updated_at.desc()).all()
+    return jsonify({"items": [_onboarding_admin_payload(row) for row in rows]})
+
+
+@admin_api.patch("/admin/whatsapp-onboardings/<uuid_str:onboarding_id>")
+@require_platform_admin
+def update_whatsapp_onboarding(onboarding_id: str):
+    row = db.session.get(WhatsAppOnboarding, onboarding_id)
+    if row is None:
+        return jsonify({"error": "WhatsApp onboarding request not found"}), 404
+    payload = _onboarding_json()
+    if payload is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+    action = payload.get("action")
+    if action not in ("review", "provision", "update", "ready_for_testing", "record_check", "activate", "suspend"):
+        return jsonify({"error": "A valid provisioning action is required"}), 400
+
+    if action == "review":
+        try:
+            whatsapp_onboarding.transition(row, "under_review")
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 409
+    elif action == "provision":
+        try:
+            whatsapp_onboarding.transition(row, "provisioning")
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 409
+    elif action == "ready_for_testing":
+        try:
+            whatsapp_onboarding.transition(row, "ready_for_testing")
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 409
+    elif action == "record_check":
+        try:
+            passed = parse_strict_bool(payload.get("passed"), "passed")
+        except InvalidInput as exc:
+            return jsonify({"error": str(exc)}), 400
+        source_value = payload.get("source", "administrator_confirmation")
+        source = _required_string(source_value, "source", max_length=64)
+        if source is None:
+            return jsonify({"error": "source must be a non-empty string"}), 400
+        if source not in ("administrator_confirmation", "provider_console", "test_webhook"):
+            return jsonify({"error": "source must identify the confirmation method"}), 400
+        check_error = None
+        if "error" in payload:
+            check_error = _required_string(payload["error"], "error", allow_empty=True)
+            if check_error is None:
+                return jsonify({"error": "error must be a string of at most 2000 characters"}), 400
+        if not passed and "failed" not in whatsapp_onboarding.TRANSITIONS.get(row.status, set()):
+            return jsonify({"error": "Invalid onboarding status transition"}), 409
+        whatsapp_onboarding.mark_provider_check(row, passed, source)
+        if not passed:
+            try:
+                whatsapp_onboarding.transition(row, "failed")
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 409
+            row.provisioning_error = check_error or "Connection check failed"
+    elif action == "activate":
+        try:
+            whatsapp_onboarding.activate(row)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 409
+    elif action == "suspend":
+        try:
+            whatsapp_onboarding.suspend(row)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 409
+    elif action == "update":
+        # Validate every requested value before mutating the ORM row.  A 4xx
+        # response does not commit, but a clean preflight also avoids leaving
+        # dirty state in the request-scoped session for any later work.
+        if "twilio_configuration_recorded" in payload:
+            try:
+                parse_strict_bool(payload["twilio_configuration_recorded"], "twilio_configuration_recorded")
+            except InvalidInput as exc:
+                return jsonify({"error": str(exc)}), 400
+        for field, allowed in (("phone_verification_status", whatsapp_onboarding.VERIFICATION_STATUSES),
+                               ("meta_verification_status", whatsapp_onboarding.VERIFICATION_STATUSES),
+                               ("registration_status", whatsapp_onboarding.REGISTRATION_STATUSES)):
+            if field in payload and (not isinstance(payload[field], str) or payload[field] not in allowed):
+                return jsonify({"error": f"Invalid {field}"}), 400
+        if "outstanding_requirements" in payload and (
+            not isinstance(payload["outstanding_requirements"], list)
+            or not all(isinstance(x, str) and x.strip() for x in payload["outstanding_requirements"])
+        ):
+            return jsonify({"error": "outstanding_requirements must be a list of non-empty strings"}), 400
+        if "status" in payload:
+            if not isinstance(payload["status"], str) or payload["status"] not in whatsapp_onboarding.ADMIN_STATUSES:
+                return jsonify({"error": "Invalid administrative onboarding status"}), 400
+            if payload["status"] not in whatsapp_onboarding.TRANSITIONS.get(row.status, set()):
+                return jsonify({"error": "Invalid onboarding status transition"}), 409
+        sender_sid = None
+        if "twilio_sender_sid" in payload:
+            value = payload["twilio_sender_sid"]
+            if value is not None and (not isinstance(value, str) or not _TWILIO_SENDER_SID_RE.fullmatch(value.strip())):
+                return jsonify({"error": "twilio_sender_sid must be a Twilio PN sender SID"}), 400
+            sender_sid = value.strip() if isinstance(value, str) and value.strip() else None
+        provisioning_error = None
+        if "provisioning_error" in payload:
+            provisioning_error = _required_string(payload["provisioning_error"], "provisioning_error", allow_empty=True)
+            if provisioning_error is None:
+                return jsonify({"error": "provisioning_error must be a string of at most 2000 characters"}), 400
+        # Everything above is validation.  Do not change the ORM row until all
+        # supplied fields, including optional text, are known to be valid.
+        if "twilio_sender_sid" in payload:
+            row.twilio_sender_sid = sender_sid
+        if "twilio_configuration_recorded" in payload:
+            row.twilio_configuration_recorded = parse_strict_bool(payload["twilio_configuration_recorded"], "twilio_configuration_recorded")
+        for field, allowed in (("phone_verification_status", whatsapp_onboarding.VERIFICATION_STATUSES),
+                               ("meta_verification_status", whatsapp_onboarding.VERIFICATION_STATUSES),
+                               ("registration_status", whatsapp_onboarding.REGISTRATION_STATUSES)):
+            if field in payload:
+                setattr(row, field, payload[field])
+        if "outstanding_requirements" in payload:
+            row.outstanding_requirements = [x.strip() for x in payload["outstanding_requirements"]]
+        if "provisioning_error" in payload:
+            row.provisioning_error = provisioning_error or None
+        if "status" in payload:
+            whatsapp_onboarding.transition(row, payload["status"])
+
+    record_audit("whatsapp_onboarding." + action, "whatsapp_onboarding", row.id,
+                 tenant_id=row.tenant_id, status=row.status)
+    db.session.commit()
+    return jsonify({"onboarding": _onboarding_admin_payload(row)})
 
 
 @admin_api.post("/admin/tenants")

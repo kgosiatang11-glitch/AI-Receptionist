@@ -27,6 +27,7 @@ from smartdesk.models import (
     Membership,
     Tenant,
     User,
+    WhatsAppOnboarding,
 )
 from smartdesk.security.rbac import (
     record_audit,
@@ -39,6 +40,7 @@ from smartdesk.services import membership_lifecycle
 from smartdesk.services.knowledge import SECTION_LABELS, ensure_profile, get_profile
 from smartdesk.services.membership_lifecycle import LastOwnerError
 from smartdesk.tenancy import normalize_address, tenant_query
+from smartdesk.services import whatsapp_onboarding
 
 config_api = Blueprint("config_api", __name__)
 
@@ -510,6 +512,38 @@ def update_receptionist():
 # ---------------------------------------------------------------------------
 
 
+@config_api.get("/whatsapp-onboarding")
+@require_tenant()
+def get_whatsapp_onboarding():
+    """Tenant-safe status view; provider operational details stay admin-only."""
+    row = tenant_query(WhatsAppOnboarding).one_or_none()
+    return jsonify({"onboarding": row.to_dict() if row else None})
+
+
+@config_api.post("/whatsapp-onboarding")
+@require_tenant(ROLE_OWNER)
+def request_whatsapp_onboarding():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+    if not isinstance(payload.get("phone_number"), str):
+        return jsonify({"error": "phone_number must be a string"}), 400
+    display_name = payload.get("display_name", "")
+    if not isinstance(display_name, str):
+        return jsonify({"error": "display_name must be a string"}), 400
+    try:
+        row, changed = whatsapp_onboarding.submit_request(
+            g.tenant.id, payload.get("phone_number"), display_name.strip()
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if changed:
+        record_audit("whatsapp_onboarding.request", "whatsapp_onboarding", row.id,
+                     tenant_id=g.tenant.id, requested_number=row.requested_number)
+        db.session.commit()
+    return jsonify({"onboarding": row.to_dict()}), 201 if changed else 200
+
+
 #: Dashboard states for a channel.  They are derived only from data this
 #: application owns: the row's ``is_active`` flag and ``last_inbound_at``.
 #: ``receiving`` means a real inbound request has resolved to this channel.  It
@@ -596,6 +630,9 @@ def create_channel():
     address = normalize_address(payload.get("address"))
     if kind not in ("whatsapp", "voice", "sms") or not address:
         return jsonify({"error": "A valid kind and address are required"}), 400
+
+    if kind == "whatsapp":
+        return jsonify({"error": "WhatsApp numbers must be submitted through the WhatsApp setup request for administrator provisioning."}), 403
 
     existing = Channel.query.filter_by(kind=kind, address=address).one_or_none()
     if existing is not None:
